@@ -1,0 +1,117 @@
+# ============================================================
+# 实验配置 / Experiment config
+# 只改这个文件即可增删模型、切换语言与采样方式。
+# ============================================================
+
+# 题库路径(相对本文件所在目录的上一级,即 EAI Project/)
+item_bank: "../题库_ItemBank_v2_400.xlsx"
+sheet: "ItemBank 题库"          # 工作表名;留空则取第一个表
+
+languages: ["en"]               # 只跑英文(如需中文,改回 ["zh","en"] 即可,已跑的英文不会重跑)
+n_samples: 4                    # 每题采样次数(temperature>0 多次采样)
+concurrency: 8                  # 并发请求数;本地模型设成 ≤ LM Studio 的 Max Concurrent Predictions(你现在是4)
+max_tokens: 1024                # 允许思考型模型先输出思维链再给 JSON;留足额度防截断
+                                # (若仍出现 finish_reason=length,继续调大到 2048)
+json_mode: false                # 若本地端点支持结构化输出可设 true(强制合法 JSON、消除代码围栏)
+capture_logprobs: false         # 辅助分析:仅对 supports_logprobs 的模型收集 token 概率
+use_seed: true                  # 采样时给每次不同 seed(支持的 API 更可复现)
+base_seed: 1000
+retries: 3
+sleep: 0.0                      # 每次调用后停顿秒数(API 限流时调大,如 0.5)
+
+output_dir: "results"
+output_file: "results_local.csv"  # 三个本地模型统一写这里(已合并 e2b/e4b/26b 历史数据);用 model 列区分
+
+# ------------------------------------------------------------
+# 模型列表。每项字段:
+#   name           结果里用的标识(唯一)
+#   base_url       OpenAI 兼容端点
+#   api_key_env    读取密钥的环境变量名(本地模型可省略)
+#   model_id       该端点下的模型标识
+#   temperature    采样温度(>0 才有随机性)
+#   n_samples      可覆盖全局;确定性单次则设 temperature:0 且 n_samples:1
+#   supports_logprobs  该模型是否返回 logprobs(用于辅助分析)
+#   max_tokens / timeout / sleep  可选
+# 提示:各家 API 的 base_url 见 README_LMStudio.md 第 4 节。
+# ------------------------------------------------------------
+models:
+
+  # ---- 本地 Gemma 4(LM Studio,全 MLX)----
+  # ⚠️ 一次只跑一个:LM Studio 里加载哪个,就 --models 跑对应的那个 name。
+  #    别一次跑多个本地 name,否则没加载的那个会被当前加载的模型冒名(看 served_model 列可发现)。
+  #    model_id 以 LM Studio 里显示的实际标识为准(Info/Load 标签);因 LM Studio 按已加载模型回答,
+  #    这里的 model_id 基本是标签作用,但仍建议填对、并用 served_model 列核对。
+
+  - name: local-gemma-e2b            # 弱端:预期错更多、置信度更散(最有信息量的补充)
+    base_url: "http://localhost:1234/v1"
+    api_key: "lm-studio"
+    model_id: "google/gemma-4-e2b"   # 以 LM Studio 实际标识为准
+    temperature: 0.7
+    supports_logprobs: true
+
+  - name: local-gemma-e4b            # 中:已完成一轮(数据在 results_gemma4-e4b.csv)
+    base_url: "http://localhost:1234/v1"
+    api_key: "lm-studio"
+    model_id: "google/gemma-4-e4b"
+    temperature: 0.7
+    supports_logprobs: true
+
+  - name: local-gemma-26b-a4b-qat    # 强端:MoE,26B 全进内存但只激活 4B → 快;QAT 低比特高质量
+    base_url: "http://localhost:1234/v1"
+    api_key: "lm-studio"
+    model_id: "google/gemma-4-26b-a4b-qat"   # 以 LM Studio 实际标识为准
+    temperature: 0.7
+    supports_logprobs: true
+
+  # ---- 暂不用:无 MLX 版,near-ceiling,先注释 ----
+  # - name: local-gemma-12b
+  #   base_url: "http://localhost:1234/v1"
+  #   api_key: "lm-studio"
+  #   model_id: "google/gemma-4-12b"
+  #   temperature: 0.7
+  #   supports_logprobs: true
+  #
+  # - name: local-gemma-31b
+  #   base_url: "http://localhost:1234/v1"
+  #   api_key: "lm-studio"
+  #   model_id: "google/gemma-4-31b"
+  #   temperature: 0.7
+  #   supports_logprobs: true
+
+  # ---- 云端 API(填好对应环境变量的密钥后取消注释) ----
+  # - name: gpt-4o-mini
+  #   base_url: "https://api.openai.com/v1"
+  #   api_key_env: "OPENAI_API_KEY"
+  #   model_id: "gpt-4o-mini"
+  #   temperature: 0.7
+  #   supports_logprobs: true
+
+  - name: deepseek-v4-pro
+    base_url: "https://api.deepseek.com"
+    api_key_env: "DEEPSEEK_API_KEY"
+    model_id: "deepseek-v4-pro"
+    temperature: 0.7
+
+  - name: deepseek-v4-flash
+    base_url: "https://api.deepseek.com"
+    api_key_env: "DEEPSEEK_API_KEY"
+    model_id: "deepseek-v4-flash"
+    temperature: 0.7
+
+  # - name: qwen-plus
+  #   base_url: "https://dashscope.aliyuncs.com/compatible-mode/v1"
+  #   api_key_env: "DASHSCOPE_API_KEY"
+  #   model_id: "qwen-plus"
+  #   temperature: 0.7
+
+  # - name: claude-opus
+  #   base_url: "https://api.anthropic.com/v1/"
+  #   api_key_env: "ANTHROPIC_API_KEY"
+  #   model_id: "claude-opus-4-1"
+  #   temperature: 0.7
+
+  # - name: gemini-2.5-flash
+  #   base_url: "https://generativelanguage.googleapis.com/v1beta/openai/"
+  #   api_key_env: "GEMINI_API_KEY"
+  #   model_id: "gemini-2.5-flash"
+  #   temperature: 0.7

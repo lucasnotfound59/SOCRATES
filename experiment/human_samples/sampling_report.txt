@@ -1,0 +1,10 @@
+抽样报告 2026-07-07T13:39:48
+题库: /sessions/magical-inspiring-bell/mnt/EAI Project/experiment/../题库_ItemBank_v2_400.xlsx
+被试数: 3 | 每格 3 题 | 每份 36 题
+语言: en | seed: 42
+
+每份每格数量是否全部 = 3: 是 ✓ (完全均匀)
+每份 T/F(答案键未强制均衡,仅记录):
+  被试01: T=16 F=20
+  被试02: T=22 F=14
+  被试03: T=23 F=13

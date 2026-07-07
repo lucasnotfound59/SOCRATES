@@ -1,0 +1,19 @@
+# ===== 密钥 / 绝不提交 =====
+.env
+**/.env
+*.key
+*.pem
+
+# ===== 系统 / 编辑器垃圾 =====
+.DS_Store
+**/.DS_Store
+~$*                # Office 打开文件时的临时锁文件
+Thumbs.db
+
+# ===== Python =====
+__pycache__/
+**/__pycache__/
+*.pyc
+
+# ===== 备份 =====
+*.bak
