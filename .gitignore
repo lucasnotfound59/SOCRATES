@@ -23,3 +23,7 @@ EAI notes/
 
 # ===== 论文手稿 / 不公开 =====
 papers/
+# converted paper markdowns (root)
+Final Paper.md
+Final_Paper_EN.md
+annotated_bibliography.md
