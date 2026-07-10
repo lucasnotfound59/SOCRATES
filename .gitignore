@@ -27,3 +27,13 @@ papers/
 Final Paper.md
 Final_Paper_EN.md
 annotated_bibliography.md
+
+# ===== 人类受试数据 / 隐私,绝不提交 =====
+experiment/human_samples/
+experiment/results/human_long.csv
+experiment/results/master_long.csv
+
+# ===== 报告类产物 / 备份(可再生,不入库)=====
+*.pptx
+SOCRATES_旧克隆_备份.zip
+*.pdf

@@ -153,7 +153,7 @@ def main():
 
     key_rows = []
     for p in range(1, args.n + 1):
-        rng = random.Random((seed, p))       # 每份独立、可复现
+        rng = random.Random(seed * 1_000_003 + p)   # 每份独立、可复现(int 种子,兼容 Python 3.14)
         chosen = sample_one(cells, args.per_cell, rng)
         qpath = os.path.join(args.out_dir, f"participant_{p:02d}.xlsx")
         write_questionnaire(qpath, p, chosen, args.language)

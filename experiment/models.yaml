@@ -78,13 +78,105 @@ models:
   #   temperature: 0.7
   #   supports_logprobs: true
 
-  # ---- 云端 API(填好对应环境变量的密钥后取消注释) ----
-  # - name: gpt-4o-mini
-  #   base_url: "https://api.openai.com/v1"
-  #   api_key_env: "OPENAI_API_KEY"
-  #   model_id: "gpt-4o-mini"
-  #   temperature: 0.7
-  #   supports_logprobs: true
+  # ---- 本地 Qwen3 小模型(LM Studio,MLX,思考型)----
+  # 一次加载一个,--models 跑对应 name;model_id 以 LM Studio Info/Load 显示为准,靠 served_model 列核对。
+  # Qwen3 会思考 → 看 reasoning_tokens;若 finish_reason=length 多,再调大 max_tokens。
+  - name: local-qwen3-1.7b           # 弱端(1.7B)→ 最可能过度自信
+    base_url: "http://localhost:1234/v1"
+    api_key: "lm-studio"
+    model_id: "qwen/qwen3-1.7b"
+    temperature: 0.7
+    max_tokens: 2048
+    supports_logprobs: true
+
+  - name: local-qwen3-4b             # 中小(4B)
+    base_url: "http://localhost:1234/v1"
+    api_key: "lm-studio"
+    model_id: "qwen/qwen3-4b"
+    temperature: 0.7
+    max_tokens: 2048
+    supports_logprobs: true
+
+  - name: local-qwen3-14b            # 中(14B)
+    base_url: "http://localhost:1234/v1"
+    api_key: "lm-studio"
+    model_id: "qwen/qwen3-14b"
+    temperature: 0.7
+    max_tokens: 2048
+    supports_logprobs: true
+
+  # ---- 本地 Qwen3 无思考版(对照;需验证 reasoning_tokens 是否真的降为 0)----
+  # extra_body.chat_template_kwargs.enable_thinking=false 未必被 LM Studio 透传;
+  # 跑 --limit 5 看 reasoning_tokens:若仍>0,改用 LM Studio 模型设置里的 Reasoning 开关关掉。
+  - name: local-qwen3-1.7b-nothink
+    base_url: "http://localhost:1234/v1"
+    api_key: "lm-studio"
+    model_id: "qwen/qwen3-1.7b"
+    temperature: 0.7
+    max_tokens: 512
+    extra_body: {chat_template_kwargs: {enable_thinking: false}}
+
+  - name: local-qwen3-4b-nothink
+    base_url: "http://localhost:1234/v1"
+    api_key: "lm-studio"
+    model_id: "qwen/qwen3-4b"
+    temperature: 0.7
+    max_tokens: 512
+    extra_body: {chat_template_kwargs: {enable_thinking: false}}
+
+  - name: local-qwen3-14b-nothink
+    base_url: "http://localhost:1234/v1"
+    api_key: "lm-studio"
+    model_id: "qwen/qwen3-14b"
+    temperature: 0.7
+    max_tokens: 512
+    extra_body: {chat_template_kwargs: {enable_thinking: false}}
+
+  # ---- OpenAI ----
+  - name: gpt-5.5                    # 前沿旗舰(思考型)
+    base_url: "https://api.openai.com/v1"
+    api_key_env: "OPENAI_API_KEY"
+    model_id: "gpt-5.5"
+    temperature: 0.7
+    supports_logprobs: true
+
+  - name: gpt-5.4-mini              # 中/快点,给 OpenAI 内部梯度
+    base_url: "https://api.openai.com/v1"
+    api_key_env: "OPENAI_API_KEY"
+    model_id: "gpt-5.4-mini"        # 更弱点可用 gpt-5.4-nano
+    temperature: 0.7
+    supports_logprobs: true
+
+  # ---- OpenAI 老模型(非推理,便宜;弱端更可能产生校准信号)----
+  # 已从 ChatGPT 下架但 API 仍可用。若某个 404 → 该账号无权限或已彻底退役,删掉即可。
+  # 都是非推理模型 → 用标准 temperature+max_tokens,运行器自动走普通路径。
+  - name: gpt-4o-mini               # 2024,最弱之一 → 最可能给出错误/过度自信
+    base_url: "https://api.openai.com/v1"
+    api_key_env: "OPENAI_API_KEY"
+    model_id: "gpt-4o-mini"
+    temperature: 0.7
+    supports_logprobs: true
+
+  - name: gpt-4.1-mini
+    base_url: "https://api.openai.com/v1"
+    api_key_env: "OPENAI_API_KEY"
+    model_id: "gpt-4.1-mini"
+    temperature: 0.7
+    supports_logprobs: true
+
+  - name: gpt-4o                    # 2024 中端
+    base_url: "https://api.openai.com/v1"
+    api_key_env: "OPENAI_API_KEY"
+    model_id: "gpt-4o"
+    temperature: 0.7
+    supports_logprobs: true
+
+  - name: gpt-4.1
+    base_url: "https://api.openai.com/v1"
+    api_key_env: "OPENAI_API_KEY"
+    model_id: "gpt-4.1"
+    temperature: 0.7
+    supports_logprobs: true
 
   - name: deepseek-v4-pro
     base_url: "https://api.deepseek.com"
@@ -98,11 +190,110 @@ models:
     model_id: "deepseek-v4-flash"
     temperature: 0.7
 
-  # - name: qwen-plus
-  #   base_url: "https://dashscope.aliyuncs.com/compatible-mode/v1"
-  #   api_key_env: "DASHSCOPE_API_KEY"
-  #   model_id: "qwen-plus"
-  #   temperature: 0.7
+  # ---- DeepSeek 无思考条件(与上面思考版对照;单独 name + 单独 output-file)----
+  # V4 用 thinking.type=disabled 关思考;关掉后 temperature 正常生效。跑完看 reasoning_tokens 应≈0。
+  - name: deepseek-v4-pro-nothink
+    base_url: "https://api.deepseek.com"
+    api_key_env: "DEEPSEEK_API_KEY"
+    model_id: "deepseek-v4-pro"
+    temperature: 0.7
+    extra_body: {thinking: {type: disabled}}
+
+  - name: deepseek-v4-flash-nothink
+    base_url: "https://api.deepseek.com"
+    api_key_env: "DEEPSEEK_API_KEY"
+    model_id: "deepseek-v4-flash"
+    temperature: 0.7
+    extra_body: {thinking: {type: disabled}}
+
+  # ---- 通义千问 Qwen(DashScope OpenAI 兼容)----
+  # base_url:中国大陆用 dashscope.aliyuncs.com;海外用 dashscope-intl.aliyuncs.com。
+  # 需在 .env 填 QWEN_API_KEY(与所选区域一致)。qwen3.7-max 是推理模型。
+  - name: qwen3.7-max               # 前沿旗舰(推理型,1M 上下文)
+    base_url: "https://ws-dtu27euclxd74a49.cn-beijing.maas.aliyuncs.com/compatible-mode/v1"
+    api_key_env: "QWEN_API_KEY"
+    model_id: "qwen3.7-max"
+    temperature: 0.7
+    # 思考模式若报"仅支持 stream"错误,取消下面两行注释(开思考+流式):
+    # stream: true
+    # extra_body: {enable_thinking: true}
+
+  - name: qwen3.7-plus              # 多模态旗舰(本研究只用文本)
+    base_url: "https://ws-dtu27euclxd74a49.cn-beijing.maas.aliyuncs.com/compatible-mode/v1"
+    api_key_env: "QWEN_API_KEY"
+    model_id: "qwen3.7-plus"
+    temperature: 0.7
+    # stream: true
+    # extra_body: {enable_thinking: true}
+
+  # ---- Qwen 无思考条件(与上面思考版对照;单独 name + 单独 output-file)----
+  # 关思考后应为非流式;跑完看 reasoning_tokens 是否≈0 以确认真的关掉了。
+  - name: qwen3.7-max-nothink        # = qwen3.7-max,但关闭思考
+    base_url: "https://ws-dtu27euclxd74a49.cn-beijing.maas.aliyuncs.com/compatible-mode/v1"
+    api_key_env: "QWEN_API_KEY"
+    model_id: "qwen3.7-max"
+    temperature: 0.7
+    extra_body: {enable_thinking: false}
+
+  - name: qwen3.7-plus-nothink       # = qwen3.7-plus,但关闭思考
+    base_url: "https://ws-dtu27euclxd74a49.cn-beijing.maas.aliyuncs.com/compatible-mode/v1"
+    api_key_env: "QWEN_API_KEY"
+    model_id: "qwen3.7-plus"
+    temperature: 0.7
+    extra_body: {enable_thinking: false}
+
+  # ---- 百炼 经典/老模型(便宜的弱端点;qwen2.5 系本就无思考)----
+  # 全部无思考运行。若某个 404/未开通 → 去百炼控制台"模型广场"开通,或删掉该行。
+  # 小模型越小越弱、越可能犯错并过度自信,是最想要的弱端信号。
+  - name: qwen-turbo                 # 经典廉价商用款(qwen3 系,显式关思考)
+    base_url: "https://ws-dtu27euclxd74a49.cn-beijing.maas.aliyuncs.com/compatible-mode/v1"
+    api_key_env: "QWEN_API_KEY"
+    model_id: "qwen-turbo"
+    temperature: 0.7
+    extra_body: {enable_thinking: false}
+
+  # 以下 model_id 均已在你工作空间的 models.list() 中确认可用(2026-07)。
+  - name: qwen1.5-0.5b               # 2024,0.5B,最弱 → 信号最强
+    base_url: "https://ws-dtu27euclxd74a49.cn-beijing.maas.aliyuncs.com/compatible-mode/v1"
+    api_key_env: "QWEN_API_KEY"
+    model_id: "qwen1.5-0.5b-chat"
+    temperature: 0.7
+
+  - name: qwen1.5-1.8b               # 2024,1.8B
+    base_url: "https://ws-dtu27euclxd74a49.cn-beijing.maas.aliyuncs.com/compatible-mode/v1"
+    api_key_env: "QWEN_API_KEY"
+    model_id: "qwen1.5-1.8b-chat"
+    temperature: 0.7
+
+  - name: qwen1.5-7b                 # 2024,7B
+    base_url: "https://ws-dtu27euclxd74a49.cn-beijing.maas.aliyuncs.com/compatible-mode/v1"
+    api_key_env: "QWEN_API_KEY"
+    model_id: "qwen1.5-7b-chat"
+    temperature: 0.7
+
+  - name: qwen1.5-14b                # 2024,14B(老中端)
+    base_url: "https://ws-dtu27euclxd74a49.cn-beijing.maas.aliyuncs.com/compatible-mode/v1"
+    api_key_env: "QWEN_API_KEY"
+    model_id: "qwen1.5-14b-chat"
+    temperature: 0.7
+
+  - name: qwen2-7b                   # 2024,Qwen2 7B
+    base_url: "https://ws-dtu27euclxd74a49.cn-beijing.maas.aliyuncs.com/compatible-mode/v1"
+    api_key_env: "QWEN_API_KEY"
+    model_id: "qwen2-7b-instruct"
+    temperature: 0.7
+
+  - name: qwen2.5-1.5b               # 2024,Qwen2.5 1.5B
+    base_url: "https://ws-dtu27euclxd74a49.cn-beijing.maas.aliyuncs.com/compatible-mode/v1"
+    api_key_env: "QWEN_API_KEY"
+    model_id: "qwen2.5-1.5b-instruct"
+    temperature: 0.7
+
+  - name: qwen2.5-0.5b               # 2024,Qwen2.5 0.5B(最小)
+    base_url: "https://ws-dtu27euclxd74a49.cn-beijing.maas.aliyuncs.com/compatible-mode/v1"
+    api_key_env: "QWEN_API_KEY"
+    model_id: "qwen2.5-0.5b-instruct"
+    temperature: 0.7
 
   # - name: claude-opus
   #   base_url: "https://api.anthropic.com/v1/"

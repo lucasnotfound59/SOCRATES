@@ -206,37 +206,85 @@ def print_status(models, languages, items, cfg, done, extra=""):
     return total_remaining
 
 # ---------- 调用 ----------
-def call_model(client, mcfg, messages, capture_logprobs=False, seed=None):
-    kwargs = dict(
-        model=mcfg["model_id"],
-        messages=messages,
-        temperature=mcfg.get("temperature", 0.7),
-        max_tokens=mcfg.get("max_tokens", 200),
-    )
+def is_reasoning_model(model_id):
+    """OpenAI 的 GPT-5 / o 系列推理模型:需 max_completion_tokens、不接受自定义 temperature、不支持 logprobs。"""
+    m = (model_id or "").lower()
+    return m.startswith(("gpt-5", "o1", "o3", "o4")) or "reason" in m
+
+def _build_kwargs(mcfg, messages, seed, capture_logprobs, reasoning):
+    kw = dict(model=mcfg["model_id"], messages=messages)
+    tok = mcfg.get("max_tokens", 1024)
+    if reasoning:
+        kw["max_completion_tokens"] = tok           # 推理模型用这个字段
+        # 不传 temperature(推理模型仅支持默认值);不传 logprobs(不支持)
+    else:
+        kw["temperature"] = mcfg.get("temperature", 0.7)
+        kw["max_tokens"] = tok
+        if capture_logprobs and mcfg.get("supports_logprobs"):
+            kw["logprobs"] = True
+            kw["top_logprobs"] = 5
     if seed is not None:
-        kwargs["seed"] = seed
+        kw["seed"] = seed
     if mcfg.get("json_mode"):
-        kwargs["response_format"] = {"type": "json_object"}
-    if capture_logprobs and mcfg.get("supports_logprobs"):
-        kwargs["logprobs"] = True
-        kwargs["top_logprobs"] = 5
+        kw["response_format"] = {"type": "json_object"}
+    if mcfg.get("extra_body"):                       # 厂商专属参数透传(如 Qwen 的 enable_thinking)
+        kw["extra_body"] = mcfg["extra_body"]
+    return kw
+
+def _once(client, kwargs, mcfg, capture_logprobs):
+    """执行一次请求(流式或非流式),统一返回 (content, finish_reason, reasoning_tokens, served, logprobs)。"""
+    if mcfg.get("stream"):                            # 部分思考型模型(如 Qwen)开思考需流式
+        kwargs = dict(kwargs)
+        kwargs["stream"] = True
+        kwargs["stream_options"] = {"include_usage": True}
+        parts = []; fr = ""; served = ""; rt = 0
+        for chunk in client.chat.completions.create(**kwargs):
+            if getattr(chunk, "model", None):
+                served = chunk.model
+            if chunk.choices:
+                d = chunk.choices[0].delta
+                if getattr(d, "content", None):
+                    parts.append(d.content)           # 只累积最终答案,不累积 reasoning
+                if chunk.choices[0].finish_reason:
+                    fr = chunk.choices[0].finish_reason
+            u = getattr(chunk, "usage", None)
+            if u:
+                try: rt = u.completion_tokens_details.reasoning_tokens or 0
+                except Exception: pass
+        return "".join(parts), fr, rt, served, None
     resp = client.chat.completions.create(**kwargs)
-    choice = resp.choices[0]
-    content = choice.message.content or ""   # 只用最终答案;不拿 reasoning 当答案
-    fr = getattr(choice, "finish_reason", None) or ""
+    ch = resp.choices[0]
+    content = ch.message.content or ""
+    fr = getattr(ch, "finish_reason", None) or ""
     rt = 0
-    try:
-        rt = resp.usage.completion_tokens_details.reasoning_tokens or 0
-    except Exception:
-        rt = 0
-    text = content if content else f"[EMPTY finish_reason={fr} reasoning_tokens={rt}]"
-    served = getattr(resp, "model", None) or ""   # LM Studio/API 实际使用的模型
+    try: rt = resp.usage.completion_tokens_details.reasoning_tokens or 0
+    except Exception: pass
+    served = getattr(resp, "model", None) or ""
     lp = None
     try:
-        if capture_logprobs and choice.logprobs:
-            lp = json.dumps(choice.logprobs.model_dump(), ensure_ascii=False)
+        if capture_logprobs and ch.logprobs:
+            lp = json.dumps(ch.logprobs.model_dump(), ensure_ascii=False)
     except Exception:
         lp = None
+    return content, fr, rt, served, lp
+
+def call_model(client, mcfg, messages, capture_logprobs=False, seed=None):
+    # 优先按配置 reasoning;否则按 model_id 自动判断
+    reasoning = mcfg.get("reasoning", is_reasoning_model(mcfg["model_id"]))
+    kwargs = _build_kwargs(mcfg, messages, seed, capture_logprobs, reasoning)
+    try:
+        content, fr, rt, served, lp = _once(client, kwargs, mcfg, capture_logprobs)
+    except Exception as e:
+        # 参数不兼容(temperature / max_tokens / max_completion_tokens / unsupported)时,
+        # 翻转推理风格再试一次。400 报错不产生 token、不额外计费。
+        msg = str(e).lower()
+        if any(w in msg for w in ("temperature", "max_tokens", "max_completion_tokens",
+                                  "unsupported", "logprobs")):
+            kwargs = _build_kwargs(mcfg, messages, seed, capture_logprobs, not reasoning)
+            content, fr, rt, served, lp = _once(client, kwargs, mcfg, capture_logprobs)
+        else:
+            raise
+    text = content if content else f"[EMPTY finish_reason={fr} reasoning_tokens={rt}]"
     return text, lp, served, fr, rt
 
 def make_client(mcfg):
