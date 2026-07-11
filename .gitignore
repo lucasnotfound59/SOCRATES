@@ -37,3 +37,8 @@ experiment/results/master_long.csv
 *.pptx
 SOCRATES_旧克隆_备份.zip
 *.pdf
+
+# ===== 人类个体级衍生(含 participant_id 真名)/ 隐私 =====
+experiment/results/analysis/human_individuals.csv
+# ===== 生成的仪表盘(可由 build_dashboard.py 再生)=====
+*.html

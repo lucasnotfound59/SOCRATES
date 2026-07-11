@@ -7,13 +7,14 @@ gpt-4o,1600,1600,1.0,0,0,0,0,openai,False,na,strong
 gpt-4o-mini,1589,1589,1.0,0,0,0,0,openai,False,na,mid
 gpt-5.4-mini,1600,1600,1.0,0,0,0,0,openai,True,na,mid
 gpt-5.5,1600,1594,0.996,6,0,0,0,openai,True,na,frontier
-human,756,756,1.0,0,0,0,0,human,False,na,human
+human,1657,1647,0.994,0,0,0,10,human,False,na,human
 local-gemma-26b-a4b-qat,1556,1556,1.0,0,0,0,0,google(local),True,na,strong
 local-gemma-e2b,1600,1600,1.0,0,0,0,0,google(local),True,na,weak
 local-gemma-e4b,1599,1599,1.0,0,0,0,0,google(local),True,na,mid
 local-qwen3-1.7b,1600,1565,0.978,35,0,0,0,other,True,na,unspecified
 local-qwen3-1.7b-nothink,1600,1346,0.841,254,0,0,0,other,False,na,unspecified
-local-qwen3-14b,1016,1015,0.999,0,1,0,0,other,True,na,unspecified
+local-qwen3-14b,1600,1599,0.999,0,0,0,1,other,True,na,unspecified
+local-qwen3-14b-nothink,1600,1512,0.945,88,0,0,0,other,False,na,unspecified
 local-qwen3-4b,1600,1566,0.979,28,0,0,6,other,True,na,unspecified
 local-qwen3-4b-nothink,1600,1372,0.858,228,0,0,0,other,False,na,unspecified
 qwen-turbo,1600,1600,1.0,0,0,0,0,alibaba,False,na,mid
