@@ -11,15 +11,13 @@ m = sys.argv[1]
 NB = int(sys.argv[2]) if len(sys.argv) > 2 else 250
 rng = np.random.default_rng(abs(hash(m)) % (2**32))
 d = load_clean(); g = d[d.model == m].reset_index(drop=True)
-is_h = (m == "human")
-pid_idx = ([g.index[g.participant_id == p].values for p in g.participant_id.unique()]
-           if is_h else None)
+# 聚类自助:人类按被试聚类;模型按题目聚类(每题 4 个采样相关,trial 级重采样会低估不确定性)
+clust_col = "participant_id" if m == "human" else "item_id"
+clust_idx = [g.index[g[clust_col] == c].values for c in g[clust_col].unique()]
 
 def draw():
-    if is_h:
-        return g.loc[np.concatenate([pid_idx[i] for i in
-                     rng.integers(0, len(pid_idx), len(pid_idx))])]
-    return g.sample(len(g), replace=True)
+    return g.loc[np.concatenate([clust_idx[i] for i in
+                 rng.integers(0, len(clust_idx), len(clust_idx))])]
 
 def fit(gg):
     df = pd.DataFrame({"Stimuli": (gg.gold == "True").astype(int),

@@ -12,6 +12,7 @@ bs = pd.read_csv(os.path.join(A, "bootstrap_summary.csv")).set_index("model")
 md = pd.read_csv(os.path.join(A, "metad_summary.csv")).set_index("model")
 byt = pd.read_csv(os.path.join(A, "by_type.csv")).set_index("model")
 hl = pd.read_csv(os.path.join(A, "hallucination.csv")).set_index("model")
+hm = pd.read_csv(os.path.join(A, "hmetad_final.csv")).set_index("model")
 
 def g(df, m, c, d=None):
     try:
@@ -37,6 +38,10 @@ for m in gs.index:
         m_lo=(round(float(g(bs, m, "m_lo")), 3) if g(bs, m, "m_lo") is not None else None),
         m_hi=(round(float(g(bs, m, "m_hi")), 3) if g(bs, m, "m_hi") is not None else None),
         estimable=bool(g(bs, m, "estimable", False)),
+        bayes_mr=(round(float(g(hm, m, "mr_mean")), 3) if g(hm, m, "mr_mean") is not None else None),
+        bayes_lo=(round(float(g(hm, m, "hdi_lo")), 3) if g(hm, m, "hdi_lo") is not None else None),
+        bayes_hi=(round(float(g(hm, m, "hdi_hi")), 3) if g(hm, m, "hdi_hi") is not None else None),
+        evidence=str(g(hm, m, "evidence", "")),
         acc_ordinary=round(float(byt.loc[m, "常规_acc"]), 3),
         acc_discipline=round(float(byt.loc[m, "学科_acc"]), 3),
         acc_trap=round(float(byt.loc[m, "陷阱_acc"]), 3),
@@ -92,7 +97,7 @@ tr.human{background:#fdeaea;font-weight:600}
   <div class="kpi"><div class="v h">0.735</div><div class="l">人类准确率(模型多在 0.97–1.00)</div></div>
   <div class="kpi"><div class="v h">1.37</div><div class="l">人类 M-ratio(可测模型仅 0.31–0.69)</div></div>
   <div class="kpi"><div class="v h">0.269</div><div class="l">人类幻觉·虚构题准确率(低于随机)</div></div>
-  <div class="kpi"><div class="v">15/20</div><div class="l">模型因天花板无法可靠估元认知</div></div>
+  <div class="kpi"><div class="v">10/20</div><div class="l">错误<10、贝叶斯也只能给出先验(不可信)</div></div>
 </div>
 
 <div class="controls">
@@ -107,7 +112,8 @@ tr.human{background:#fdeaea;font-weight:600}
     <option value="acc">准确率 Accuracy</option>
     <option value="ece">校准误差 ECE(含95%CI,越低越好)</option>
     <option value="overconf">过度自信 stated−acc</option>
-    <option value="m_ratio">元认知效率 M-ratio(含95%CI;仅可估组)</option>
+    <option value="m_ratio">元认知效率 M-ratio · MLE(含95%CI;仅可估组)</option>
+    <option value="bayes_mr">元认知效率 M-ratio · HMeta-d 贝叶斯(全组,含95%HDI)</option>
     <option value="auroc2">type-2 AUC(错误过少时不可靠)</option>
     <option value="err">错误 trial 数(天花板)</option>
   </select></h3>
@@ -147,25 +153,32 @@ const COL=d=>d.model==='human'?'#d62728':'#3b6ea5';
 let main,scatter,hall;
 const NOTES={acc:'一阶准确率;虚线=随机 0.5。',ece:'ECE 越低越好;误差棒=95% 自助CI;人类最差且CI不与任何模型重叠。',
  overconf:'>0 过度自信,<0 欠自信;人类 +0.086 最高。跨组 acc↔过度自信 ρ=−0.32(p=0.18,不显著)。',
- m_ratio:'M-ratio=meta-d′/d′,已扣一阶能力;虚线=1;仅错误≥30 的组可靠。人类[1.21,1.54]与所有模型不重叠。',
+ m_ratio:'M-ratio=meta-d′/d′,已扣一阶能力;虚线=1;MLE 仅错误≥30 的组可靠。人类[1.21,1.54]与所有模型不重叠。',
+ bayes_mr:'HMeta-d 贝叶斯,全组都有估计+95%HDI。灰=先验主导(错误<10,后验≈先验~1,不可信);蓝=正则化(10–29);深蓝=数据驱动(≥30)。人类显著高于所有可信模型。',
  auroc2:'正确 trial 信心高于错误的概率;错误过少的近满分模型不可靠(灰显)。',err:'错误 trial 数;<30(红线)无法可靠估 meta-d′。'};
+const EVCOL={'data-driven':'#1f77b4','regularized':'#7fb3d5','prior-dominated':'#c9c9c9'};
 
 function render(){
   const rows=filtered();
   const metric=metricSel.value;
-  const withCI=(metric==='ece'||metric==='m_ratio');
+  const withCI=(metric==='ece'||metric==='m_ratio'||metric==='bayes_mr');
+  const ciLo=(d)=>metric==='ece'?d.ece_lo:metric==='m_ratio'?d.m_lo:metric==='bayes_mr'?d.bayes_lo:null;
+  const ciHi=(d)=>metric==='ece'?d.ece_hi:metric==='m_ratio'?d.m_hi:metric==='bayes_mr'?d.bayes_hi:null;
   let rs=rows.slice();
   if(metric==='m_ratio') rs=rs.filter(d=>d.m_ratio!=null);
   rs.sort((a,b)=>(a[metric]??-1)-(b[metric]??-1));
   const labels=rs.map(d=>d.model), vals=rs.map(d=>d[metric]);
-  const bg=rs.map(d=>metric==='auroc2'&&d.err<30&&d.model!=='human'?'#c9d3dc':COL(d));
+  const bg=rs.map(d=>d.model==='human'?'#d62728':
+    metric==='bayes_mr'?(EVCOL[d.evidence]||'#3b6ea5'):
+    metric==='auroc2'&&d.err<30?'#c9d3dc':COL(d));
   if(main)main.destroy();
   main=new Chart(mainChart,{type:'bar',data:{labels,datasets:[{data:vals,backgroundColor:bg,
     borderColor:'#0002',borderWidth:1}]},
    options:{indexAxis:'y',plugins:{legend:{display:false},tooltip:{callbacks:{afterLabel:(c)=>{
      const d=rs[c.dataIndex];let s='tier '+d.tier+' · err '+d.err;
-     if(withCI){const lo=metric==='ece'?d.ece_lo:d.m_lo,hi=metric==='ece'?d.ece_hi:d.m_hi;
-       if(lo!=null)s+='\\n95%CI ['+lo+', '+hi+']';}return s;}}}},
+     if(metric==='bayes_mr')s+=' · '+d.evidence;
+     if(withCI){const lo=ciLo(d),hi=ciHi(d);
+       if(lo!=null)s+='\\n95%'+(metric==='bayes_mr'?'HDI':'CI')+' ['+lo+', '+hi+']';}return s;}}}},
     scales:{x:{beginAtZero:true}}}});
   // 参考线(用注解式:画一条 dataset)
   mainNote.textContent=NOTES[metric]||'';
@@ -193,7 +206,8 @@ function render(){
 
 let sortKey='acc',sortDir=1;
 const COLS=[['model','组'],['tier','层级'],['n','n'],['err','错误'],['acc','准确率'],['overconf','过度自信'],
- ['ece','ECE'],['auroc2','type2AUC'],['dprime','d′'],['meta_d','meta-d′'],['m_ratio','M-ratio'],
+ ['ece','ECE'],['auroc2','type2AUC'],['dprime','d′'],['meta_d','meta-d′'],['m_ratio','M-ratio(MLE)'],
+ ['bayes_mr','M-ratio(贝叶斯)'],['evidence','证据层级'],
  ['acc_hallucination','幻觉acc'],['fic_acc','虚构acc']];
 function buildTable(rows){
   rows=rows.slice().sort((a,b)=>{const x=a[sortKey],y=b[sortKey];

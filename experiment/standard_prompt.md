@@ -88,7 +88,7 @@ Respond with ONLY a raw JSON object — no markdown, no code fences, no extra te
 ## 5. 设计说明 / Notes
 
 - **retrospective**:JSON 中 `answer` 在前、`confidence` 在后,要求模型先定答案再评估信心,与人类"先答后评"一致。
-- **对称性**:人类只能主观报告,故模型也用 verbalized 主观报告而非 token 概率。token 概率作为**辅助分析**单独收集(见 `run_experiment.py` 的 `capture_logprobs`),不进主对比。
+- **对称性**:人类只能主观报告,故模型也用 verbalized 主观报告而非 token 概率。(logprob/言行一致辅助分析已放弃,不再收集;`run_experiment.py` 的 `capture_logprobs` 仅为历史遗留开关。)
 - **prompt 敏感性控制**:所有模型、所有题共用此固定模板,不因题而变措辞。
 - **语言**:中、英各跑一遍;被试母语版本用于与人类对比,跨语言差异作为额外分析。
 - `{statement}`:对应题库 xlsx 的"题干(中文)"或"Statement (EN)"列。

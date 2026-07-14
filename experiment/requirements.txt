@@ -1,3 +1,11 @@
 openai>=1.30.0
 pyyaml>=6.0
 openpyxl>=3.1.0
+# 分析管线(meta-d′/贝叶斯/统计/成图)
+pandas>=2.0
+numpy>=1.24
+scipy>=1.10
+matplotlib>=3.7
+metadpy>=0.1.8
+arviz>=0.17
+pymc>=5.10
