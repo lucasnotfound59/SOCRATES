@@ -91,19 +91,33 @@
 2. **更难/开放式题**:多数模型天花板、元认知不可测;需制造错误才能测前沿模型。
 3. 补 **Claude / Gemini** 等厂商;~~补 requirements.txt~~ **已补**(2026-07,含分析依赖)。
 4. ~~论文 Abstract~~ **已写**(2026-07);投稿前可再润色。
-5. ~~文献核实 + 参考文献表~~ **已完成**(2026-07):References 节已建(14 条,含新增 Yin et al. 2023);正文已修正 Peng 2024→2023、Cash 2024→2025;核查依据见 `答辩准备.md` 第一部分。投稿前仍需逐条补 DOI/卷期页码。
+5. ~~文献核实 + 参考文献表~~ **全部完成**(2026-07):References 15 条已逐条联网核实并补全作者名单/卷期页码/DOI(含 Hart 1965、Yin 2023),提醒注已删。Peng et al. Tong Test 年份已统一为 **2024**(期刊卷期 Engineering 34, 12–23;正文 3 处 + References 均已改)。作者行已定:作者:忻鹿 · 指导教师:张老师。论文 PDF:`papers/Final_Paper_EN.pdf`(pandoc+Chrome 管线,源 md 改后可重出)。
 6. ~~git push~~ **已推送**(2026-07-14,commit f1c60a3,含全部稳健性加固)。`答辩准备.md` 特意未提交(含答辩讲稿与作者姓名,是否入公开仓库由用户定)。
-7. PPT mentor 反馈 #1(标题页先孔子引语再引出 title)、#2(意义页加副标题陈列研究问题)尚未落到 PPT。
+7. ~~PPT mentor 反馈 #1、#2~~ **已落实**(2026-07,见最终版答辩 PPT)。
+
+### 5.1 等待导师讨论的研究设计待办(2026-07-25;冻结,暂不执行)
+
+> **状态:**以下内容仅记录,等待用户与导师交流后再决定。当前不得据此改题库、实验、分析、论文、PPT 或海报。
+
+1. **先厘清研究目标与构念:**研究要测试的是 AI 的元认知是否存在,而非只比较效率。若直接测“元认知效率”,会预设 AI 已经具有元认知;需要先回答本研究究竟想证明或区分什么。
+2. **厘清“高置信错误”的含义与 ground truth 层次:**答错且高置信不必然代表“不知道自己不知道”;历史上的人也可能对后来被推翻的“ground truth”高度自信。需区分测试的是系统对**自身认知状态**的元认知,还是其判断相对于**世界真实 ground truth**的正确性。若采用后者,还必须承认人类对世界的认知有限,现有题目的标准答案也不一定等同于绝对真理。
+3. **加入 FRQ:**考虑加入自由回答题(Free-Response Questions),具体形式、评分与置信度引出方式待导师确认。
+4. **加入 unsolved questions 题型:**考虑用尚无公认答案的问题测试边界觉察;题目来源、评价标准及如何避免伪 ground truth 待导师确认。
+5. **尝试替代实验设计:**例如要求被试者解释自己的回答,再据此研究其自我监控或知识边界;需先讨论解释的评分方式,以及解释是否能作为元认知存在的证据。
 
 ---
 
 ## 6. 交付物(位于 `/Users/xinlu/Desktop/EAI Project`)
 
-1. **`papers/Final_Paper_EN.md`** —— 英文论文,§1–6 正文已成稿(Results/Discussion/Conclusion/Limitations 完整,含 Table 1 全模型 MLE vs 贝叶斯、11 张图引用、§2.3 可解释/可信 AI、§6.1 Future Work)。**Abstract 仍占位。** `papers/` 已 gitignore。
-2. **`SOCRATES_进度汇报.pptx`** —— 中文汇报 PPT,**14 页**(13 正片 + 1 备用 think),每页含 presenter notes。源码在 outputs 暂存区:`build_ppt.js`(+ 备份 `build_ppt_19pg_backup.js`)、`add_notes.py`;重建:`node build_ppt.js` 后 `python3 add_notes.py`。pptx 已 gitignore。
+1. **`papers/Final_Paper_EN.md`** —— 英文论文,全部成稿并已按 **Generation-AI 论文模板**对齐(2026-07):首页=Title/Name/Abstract/**Keywords**;章节=1 Introduction / 2 Literature Review / 3 Methodology / 4 Results / 5 Discussion / 6 Conclusion and Limitations / **7 Future Work** / References;交叉引用 §6.1→§7 已全改;PDF 用 Times New Roman(`papers/Final_Paper_EN.pdf`)。**⚠ 正文约 10,900 词,超模板上限 3,000–5,000 一倍多——是否/如何压缩待用户决定。**`papers/` 已 gitignore。
+2. **`SOCRATES_Defense_EN.pptx`** —— **英文答辩终版**(2026-07,按 Generation-AI 终期答辩模板重构;模板要求 PPT 与口头汇报均为英文、Times New Roman)。16 页:Title / RQ / Background / Lit Review / Method×3 / Results×4 / Discussion / Conclusion(含局限+未来) / References(15 条) / Thank you / Backup(think)。英文 presenter notes 已写(口头是英文)。源码 `ppt_src/build_ppt_defense_en.js` + `add_notes_defense_en.py`。**中文答辩稿=`答辩准备.md`(旧中文 deck);英文答辩稿=`Defense_Prep_EN.md`(2026-07,配英文 deck:逐页计时口播稿约1471词/10.5分钟 + 18 条 Q&A + 数字速查表)。**
+2b. `SOCRATES_答辩_最终版.pptx` —— 旧中文版(2026-07),14 页(13 正片 + 1 备用 think),每页含与最新答辩稿同步的 presenter notes。相比旧进度汇报版:①标题页先孔子引语再引出题(mentor #1);②意义页顶部"研究问题"条(mentor #2);③校准页改差值检验口径(17/19);④幻觉页加 SDT 分解(人类 d′=0/轻信偏向 vs 模型真判别);⑤局限页新增"'不知道'没有通道"卡(弃答+FOK);⑥嵌入重生成的聚类 CI 图;⑦每页右上角 Generation-AI(北大斯坦福中心)logo(`ppt_src/genai_logo.png`,提取自 Downloads 的 MidReport pptx;深底页垫白色圆角卡)。**源码已迁入项目内 `ppt_src/`**:`build_ppt_final.js`+`add_notes_final.py`;重建:`NODE_PATH=<旧会话outputs>/node_modules node build_ppt_final.js` 后 `python3 add_notes_final.py`(pptxgenjs 的 node_modules 仍在旧会话 outputs 目录,或 `npm i pptxgenjs`)。旧版 `SOCRATES_进度汇报.pptx` 保留未动。pptx 均已 gitignore。
 3. **`SOCRATES_对比分析_仪表盘.html`** —— 交互式仪表盘(按层级/厂商/think 筛选,含贝叶斯 M-ratio),`build_dashboard.py` 生成;已 gitignore。
 4. **`experiment/results/figures/c_*.png`** —— 对比图集(准确率/ECE/M-ratio带CI/meta-d′vs d′/校准曲线/幻觉/天花板不稳定性/贝叶斯全组/think哑铃)。
-5. `annotated_bibliography.md`、`Final_Paper.md`(旧中文稿)——历史文件。
+5. `poster_设计需求_ClaudeDesign.md` —— 90×60cm 答辩海报的自包含设计需求(文案/数字/素材路径/视觉规范/红线)。
+6b. **`poster/poster_en.html`** —— **英文版海报**(2026-07,与中文版同版式;Times New Roman 标题/Helvetica 正文;示例题用题库 EN 原文;banner 中文引语+英译并排;自包含 0.43MB;打印已验证 899.9×600mm)。
+6. **`poster/poster.html`** —— 中文版 90×60cm 答辩海报成品(HTML,`@page 900mm×600mm`),**全部图片已 base64 嵌入、自包含单文件**;300dpi 高清图源在 `experiment/poster_figs/`(figures.py 的 dpi=300 变体产出)。用户自行转 PDF(Chrome ⌘P → 另存为 PDF → **必须勾选"背景图形"**);已加 `@media screen` 整张缩放脚本(屏幕预览可见全貌,不影响打印,已验证仍 899.9×600mm 单页)。三栏叙事:**左**=01问题(2×2危险格)+02缺口(两条研究线概念图)+03假说竖排;**中**=04方法(对称示意/四类型/5档尺度/指标/证据分层三色块)+05题目示例(取自题库真实题:陷阱刮胡子、幻觉虚构 Lambert Voss、幻觉真实冷僻 锝43);**右**=三大数字(1.37 vs ≤0.69 / 0.269 / 15-20)+2图+其他结果+裁决条+结论;底部局限通栏。
+6. `annotated_bibliography.md`、`Final_Paper.md`(旧中文稿)——历史文件。
 
 ---
 
