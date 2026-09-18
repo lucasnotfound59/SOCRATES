@@ -1,0 +1,7 @@
+model,n_attempted,n_valid,n_invalid,coverage,n_truncated,n_api_error,n_parse_failure
+repl-gemma4-e2b-q4km,1600,1600,0,1.0,0,0,0
+repl-gemma4-e4b-q4km,1600,1600,0,1.0,0,0,0
+repl-gemma4-26b-a4b-qat,1600,1598,2,0.99875,2,0,0
+repl-qwen3-1.7b-q8,1600,1600,0,1.0,0,0,0
+repl-qwen3-4b-q4km,1600,1599,1,0.999375,1,0,0
+repl-qwen3-14b-q4km,1600,1600,0,1.0,0,0,0

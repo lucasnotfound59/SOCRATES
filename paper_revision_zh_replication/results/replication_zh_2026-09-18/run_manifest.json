@@ -1,0 +1,163 @@
+{
+  "inputs": {
+    "model": {
+      "path": "results/replication_zh_2026-09-18/results_local_zh_2026-09-18.csv",
+      "sha256": "b98d97f655ee511dc5c7e0573c3300dfc5daf5760b820fa82ad93c49a2ff66ac",
+      "row_count": 9600,
+      "valid_row_count": 9597
+    },
+    "human": {
+      "path": "experiment/results/master_long.csv",
+      "sha256": "3febb2d851a6c5136496c754fcc2ec78afaac57dd6a9a4a9534713ea2920ddac",
+      "row_count": 43249,
+      "valid_row_count": 1647
+    }
+  },
+  "input_paths": {
+    "model": "results/replication_zh_2026-09-18/results_local_zh_2026-09-18.csv",
+    "human": "experiment/results/master_long.csv"
+  },
+  "input_digests": {
+    "model": "b98d97f655ee511dc5c7e0573c3300dfc5daf5760b820fa82ad93c49a2ff66ac",
+    "human": "3febb2d851a6c5136496c754fcc2ec78afaac57dd6a9a4a9534713ea2920ddac"
+  },
+  "row_counts": {
+    "model": 9600,
+    "human": 43249
+  },
+  "random_seed": 20260918,
+  "bootstrap": {
+    "nboot_metrics": 800,
+    "nboot_mratio": 250
+  },
+  "bootstrap_counts": {
+    "metrics": 800,
+    "mratio": 250
+  },
+  "package_versions": {
+    "numpy": "2.4.6",
+    "pandas": "3.0.6",
+    "scipy": "1.17.1",
+    "matplotlib": "3.11.2",
+    "metadpy": "0.1.2",
+    "pymc": "5.28.5",
+    "arviz": "0.23.4",
+    "pytensor": "2.38.3"
+  },
+  "started_at": "2026-09-18T06:32:11.387385+00:00",
+  "ended_at": "2026-09-18T06:49:48.423033+00:00",
+  "start_timestamp": "2026-09-18T06:32:11.387385+00:00",
+  "end_timestamp": "2026-09-18T06:49:48.423033+00:00",
+  "artifacts": {
+    "analysis_report_zh.md": "paper_revision_zh_replication/results/replication_zh_2026-09-18/analysis_report_zh.md",
+    "bootstrap_summary.csv": "paper_revision_zh_replication/results/replication_zh_2026-09-18/bootstrap_summary.csv",
+    "by_difficulty.csv": "paper_revision_zh_replication/results/replication_zh_2026-09-18/by_difficulty.csv",
+    "by_type.csv": "paper_revision_zh_replication/results/replication_zh_2026-09-18/by_type.csv",
+    "confidence_distribution.csv": "paper_revision_zh_replication/results/replication_zh_2026-09-18/confidence_distribution.csv",
+    "data_quality.csv": "paper_revision_zh_replication/results/replication_zh_2026-09-18/data_quality.csv",
+    "figures/accuracy_by_type.png": "paper_revision_zh_replication/results/replication_zh_2026-09-18/figures/accuracy_by_type.png",
+    "figures/hallucination_breakdown.png": "paper_revision_zh_replication/results/replication_zh_2026-09-18/figures/hallucination_breakdown.png",
+    "figures/human_model_accuracy_ece.png": "paper_revision_zh_replication/results/replication_zh_2026-09-18/figures/human_model_accuracy_ece.png",
+    "figures/model_accuracy_ece.png": "paper_revision_zh_replication/results/replication_zh_2026-09-18/figures/model_accuracy_ece.png",
+    "figures/mratio_evidence.png": "paper_revision_zh_replication/results/replication_zh_2026-09-18/figures/mratio_evidence.png",
+    "figures/reliability_curves.png": "paper_revision_zh_replication/results/replication_zh_2026-09-18/figures/reliability_curves.png",
+    "hallucination_breakdown.csv": "paper_revision_zh_replication/results/replication_zh_2026-09-18/hallucination_breakdown.csv",
+    "hallucination_sdt.csv": "paper_revision_zh_replication/results/replication_zh_2026-09-18/hallucination_sdt.csv",
+    "hmetad/groups/human.json": "paper_revision_zh_replication/results/replication_zh_2026-09-18/hmetad/groups/human.json",
+    "hmetad/groups/repl-gemma4-26b-a4b-qat.json": "paper_revision_zh_replication/results/replication_zh_2026-09-18/hmetad/groups/repl-gemma4-26b-a4b-qat.json",
+    "hmetad/groups/repl-gemma4-e2b-q4km.json": "paper_revision_zh_replication/results/replication_zh_2026-09-18/hmetad/groups/repl-gemma4-e2b-q4km.json",
+    "hmetad/groups/repl-gemma4-e4b-q4km.json": "paper_revision_zh_replication/results/replication_zh_2026-09-18/hmetad/groups/repl-gemma4-e4b-q4km.json",
+    "hmetad/groups/repl-qwen3-1.7b-q8.json": "paper_revision_zh_replication/results/replication_zh_2026-09-18/hmetad/groups/repl-qwen3-1.7b-q8.json",
+    "hmetad/groups/repl-qwen3-14b-q4km.json": "paper_revision_zh_replication/results/replication_zh_2026-09-18/hmetad/groups/repl-qwen3-14b-q4km.json",
+    "hmetad/groups/repl-qwen3-4b-q4km.json": "paper_revision_zh_replication/results/replication_zh_2026-09-18/hmetad/groups/repl-qwen3-4b-q4km.json",
+    "hmetad_summary.csv": "paper_revision_zh_replication/results/replication_zh_2026-09-18/hmetad_summary.csv",
+    "human_model_summary.csv": "paper_revision_zh_replication/results/replication_zh_2026-09-18/human_model_summary.csv",
+    "metad_summary.csv": "paper_revision_zh_replication/results/replication_zh_2026-09-18/metad_summary.csv",
+    "model_summary.csv": "paper_revision_zh_replication/results/replication_zh_2026-09-18/model_summary.csv",
+    "reliability.csv": "paper_revision_zh_replication/results/replication_zh_2026-09-18/reliability.csv",
+    "run_manifest.json": "paper_revision_zh_replication/results/replication_zh_2026-09-18/run_manifest.json",
+    "tables.md": "paper_revision_zh_replication/results/replication_zh_2026-09-18/tables.md"
+  },
+  "artifact_paths": {
+    "analysis_report_zh.md": "paper_revision_zh_replication/results/replication_zh_2026-09-18/analysis_report_zh.md",
+    "bootstrap_summary.csv": "paper_revision_zh_replication/results/replication_zh_2026-09-18/bootstrap_summary.csv",
+    "by_difficulty.csv": "paper_revision_zh_replication/results/replication_zh_2026-09-18/by_difficulty.csv",
+    "by_type.csv": "paper_revision_zh_replication/results/replication_zh_2026-09-18/by_type.csv",
+    "confidence_distribution.csv": "paper_revision_zh_replication/results/replication_zh_2026-09-18/confidence_distribution.csv",
+    "data_quality.csv": "paper_revision_zh_replication/results/replication_zh_2026-09-18/data_quality.csv",
+    "figures/accuracy_by_type.png": "paper_revision_zh_replication/results/replication_zh_2026-09-18/figures/accuracy_by_type.png",
+    "figures/hallucination_breakdown.png": "paper_revision_zh_replication/results/replication_zh_2026-09-18/figures/hallucination_breakdown.png",
+    "figures/human_model_accuracy_ece.png": "paper_revision_zh_replication/results/replication_zh_2026-09-18/figures/human_model_accuracy_ece.png",
+    "figures/model_accuracy_ece.png": "paper_revision_zh_replication/results/replication_zh_2026-09-18/figures/model_accuracy_ece.png",
+    "figures/mratio_evidence.png": "paper_revision_zh_replication/results/replication_zh_2026-09-18/figures/mratio_evidence.png",
+    "figures/reliability_curves.png": "paper_revision_zh_replication/results/replication_zh_2026-09-18/figures/reliability_curves.png",
+    "hallucination_breakdown.csv": "paper_revision_zh_replication/results/replication_zh_2026-09-18/hallucination_breakdown.csv",
+    "hallucination_sdt.csv": "paper_revision_zh_replication/results/replication_zh_2026-09-18/hallucination_sdt.csv",
+    "hmetad/groups/human.json": "paper_revision_zh_replication/results/replication_zh_2026-09-18/hmetad/groups/human.json",
+    "hmetad/groups/repl-gemma4-26b-a4b-qat.json": "paper_revision_zh_replication/results/replication_zh_2026-09-18/hmetad/groups/repl-gemma4-26b-a4b-qat.json",
+    "hmetad/groups/repl-gemma4-e2b-q4km.json": "paper_revision_zh_replication/results/replication_zh_2026-09-18/hmetad/groups/repl-gemma4-e2b-q4km.json",
+    "hmetad/groups/repl-gemma4-e4b-q4km.json": "paper_revision_zh_replication/results/replication_zh_2026-09-18/hmetad/groups/repl-gemma4-e4b-q4km.json",
+    "hmetad/groups/repl-qwen3-1.7b-q8.json": "paper_revision_zh_replication/results/replication_zh_2026-09-18/hmetad/groups/repl-qwen3-1.7b-q8.json",
+    "hmetad/groups/repl-qwen3-14b-q4km.json": "paper_revision_zh_replication/results/replication_zh_2026-09-18/hmetad/groups/repl-qwen3-14b-q4km.json",
+    "hmetad/groups/repl-qwen3-4b-q4km.json": "paper_revision_zh_replication/results/replication_zh_2026-09-18/hmetad/groups/repl-qwen3-4b-q4km.json",
+    "hmetad_summary.csv": "paper_revision_zh_replication/results/replication_zh_2026-09-18/hmetad_summary.csv",
+    "human_model_summary.csv": "paper_revision_zh_replication/results/replication_zh_2026-09-18/human_model_summary.csv",
+    "metad_summary.csv": "paper_revision_zh_replication/results/replication_zh_2026-09-18/metad_summary.csv",
+    "model_summary.csv": "paper_revision_zh_replication/results/replication_zh_2026-09-18/model_summary.csv",
+    "reliability.csv": "paper_revision_zh_replication/results/replication_zh_2026-09-18/reliability.csv",
+    "run_manifest.json": "paper_revision_zh_replication/results/replication_zh_2026-09-18/run_manifest.json",
+    "tables.md": "paper_revision_zh_replication/results/replication_zh_2026-09-18/tables.md"
+  },
+  "artifact_hashes": {
+    "analysis_report_zh.md": "d57119e1968ab990d7c57bcfe369ac9e22168e8080df5bae572e2996a0eae316",
+    "bootstrap_summary.csv": "516e1da56925d3708ebf0f2ecbfc3a4b2d5272c950dc8d6eecd7d5ada60c7ed3",
+    "by_difficulty.csv": "3a4c78600a30ac67718bbd5f7179426d88ffab74fd0d5b06c1eed07d66db0e31",
+    "by_type.csv": "1705f8c05043431f6248168530112894906c6a83f72178bad198112b0facb2ad",
+    "confidence_distribution.csv": "84b4a33eb4c9f1cb7cdb9874dc765f6566c57bd25a87d334cf6dd986e3480bfb",
+    "data_quality.csv": "03316471dddfff686af2a2690e123fe58746eb71a9a30a2299a47baf1e938792",
+    "figures/accuracy_by_type.png": "0485b940a542b117eee77af29613166b4051364d5deb0838762b1de5f4e778b1",
+    "figures/hallucination_breakdown.png": "e8cc84995c09f5e3696233cf9eb2a34dc3630c35c3b8ed6150c34d784576b604",
+    "figures/human_model_accuracy_ece.png": "8cea6e7e37e1a70231b8afc856ade607274bf0618d1e674e787625278ce64656",
+    "figures/model_accuracy_ece.png": "04afb28c07bfc65184375fba9fdf8468a84de947802464c4c66b90f6ddc10525",
+    "figures/mratio_evidence.png": "68bfb283173cb3015bb4207caa1de937339d088c66f46d6c313572a3d92d16c5",
+    "figures/reliability_curves.png": "91d8e3e0c37831cfb5e5bee726a35d22e2d488f81d7600685de4c18ef21f318a",
+    "hallucination_breakdown.csv": "9109888be9b58720d9089990c7d2c3662de8dff443de322e0be281712dc1b205",
+    "hallucination_sdt.csv": "dd5371307b77cc431fb816606e11f865d977433f69c64e483350071ac6ca7a8b",
+    "hmetad/groups/human.json": "5f36fac2cde339c1a5d4bf713a95abac38806801010abfa187a5e2eafe0ec442",
+    "hmetad/groups/repl-gemma4-26b-a4b-qat.json": "5c8b300bb6cf3f0cddd24f2843ae2466ca767fa427ac83e26679ac3d19d2dfb6",
+    "hmetad/groups/repl-gemma4-e2b-q4km.json": "5b1e319f3027b96aca643932c9ec739e050d33a64d8ad8bdd5dc6131f642c108",
+    "hmetad/groups/repl-gemma4-e4b-q4km.json": "d82f92cdd8d9ad52dceac9e2ef03c849817ccd8ea0bcc31d8e17480a6baec598",
+    "hmetad/groups/repl-qwen3-1.7b-q8.json": "1808be8ec45d48f558364919e61d393f044b130a86ca2f3adf90cfbe8c761b2a",
+    "hmetad/groups/repl-qwen3-14b-q4km.json": "8446dc86694abacef1e2f042beb51f84493a5d805e5e544b906e3cdff2681a98",
+    "hmetad/groups/repl-qwen3-4b-q4km.json": "3592e3aee1c6af9c112d033acc3c9ffe7aace0adc7fa2f1691e4f1e325fa9904",
+    "hmetad_summary.csv": "71057484650dfa24ea740b1283e6c3b65cb666aa013b47b21d87c4363eab07fa",
+    "human_model_summary.csv": "e91346634c319f11a22f23d7e7a664de3b1893f067ed3e40e69371fcaa370405",
+    "metad_summary.csv": "14501793de59b419ec77b3dfda424cbc7996f2c23043e780377b266ef8615f58",
+    "model_summary.csv": "dcefdfcf5f2c2f156cd5b460a5be578e8d9df31d33ff6d95b57cf5339502e753",
+    "reliability.csv": "558f8e679a7f0de977c55c60bd96916163734374592c7fc7e4792698efa58a90",
+    "run_manifest.json": null,
+    "tables.md": "c5f32fa196dc5d99aad7193672ed7e371f1bef274b1ba2b1ad021ee48fc7770e"
+  },
+  "bayesian": {
+    "draws": 800,
+    "chains": 2,
+    "seed": 20260918,
+    "groups": [
+      "human",
+      "repl-gemma4-e2b-q4km",
+      "repl-gemma4-e4b-q4km",
+      "repl-gemma4-26b-a4b-qat",
+      "repl-qwen3-1.7b-q8",
+      "repl-qwen3-4b-q4km",
+      "repl-qwen3-14b-q4km"
+    ]
+  },
+  "runtime_compatibility": {
+    "helper_version": "socrates-pytensor-ld64-v1",
+    "activated": true,
+    "reason": "removed-generated-ld64",
+    "pytensor_version": "2.38.3",
+    "platform": "darwin",
+    "macos_major": 26
+  }
+}
