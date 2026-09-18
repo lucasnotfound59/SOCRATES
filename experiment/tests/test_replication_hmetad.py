@@ -45,6 +45,22 @@ def make_group(model="human", n_wrong=23):
     })
 
 
+def make_complete_record(model="human", digests=None):
+    record = {
+        "model": model, "status": "complete", "n": 40, "n_wrong": 23,
+        "error_count": 23, "evidence_tier": "regularized",
+        "draws_requested": 800, "chains_requested": 2, "draws": 4,
+        "chains": 2, "seed": 20260918, "m_ratio_mean": 1.0,
+        "m_ratio_median": 1.0, "m_ratio_sd": 0.1, "mr_mean": 1.0,
+        "mr_median": 1.0, "post_sd": 0.1, "hdi_lo": 0.8,
+        "hdi_hi": 1.2, "hdi_width": 0.4, "rhat": 1.01,
+        "n_divergent": 0, "divergence_rate": 0.0, "reliable": True,
+    }
+    if digests is not None:
+        record["input_digests"] = dict(digests)
+    return record
+
+
 class HMetaSummaryTests(unittest.TestCase):
     def test_pytensor_compatibility_does_not_falsify_platform_identity(self):
         before = platform.mac_ver()
@@ -191,15 +207,16 @@ class HMetaSummaryTests(unittest.TestCase):
     def test_completed_group_is_reused_on_resume(self):
         with tempfile.TemporaryDirectory() as temp:
             group_dir = Path(temp)
-            write_group_json(group_dir, model="human", status="complete")
+            write_group_json(group_dir, make_complete_record("human"))
             pending = pending_models(["human", "model-a"], group_dir)
             self.assertEqual(pending, ["model-a"])
 
     def test_resume_requeues_complete_group_when_settings_change(self):
         with tempfile.TemporaryDirectory() as temp:
             group_dir = Path(temp)
-            write_group_json(group_dir, model="human", status="complete",
-                             draws_requested=800, chains_requested=2, seed=1)
+            record = make_complete_record("human")
+            record.update({"seed": 1, "draws_requested": 800, "chains_requested": 2})
+            write_group_json(group_dir, record)
             self.assertEqual(pending_models(["human"], group_dir,
                                             draws=900, chains=2, seed=1), ["human"])
 
@@ -207,10 +224,7 @@ class HMetaSummaryTests(unittest.TestCase):
         expected = {"model": "model-digest", "human": "human-digest"}
         with tempfile.TemporaryDirectory() as temp:
             group_dir = Path(temp)
-            write_group_json(
-                group_dir, model="human", status="complete", draws_requested=800,
-                chains_requested=2, seed=20260918, input_digests=expected,
-            )
+            write_group_json(group_dir, make_complete_record("human", expected))
             self.assertEqual(
                 pending_models(["human"], group_dir, draws=800, chains=2,
                                seed=20260918, input_digests=expected), [],
@@ -220,10 +234,7 @@ class HMetaSummaryTests(unittest.TestCase):
                                seed=20260918, input_digests={"model": "changed", "human": "human-digest"}),
                 ["human"],
             )
-            write_group_json(
-                group_dir, model="legacy", status="complete", draws_requested=800,
-                chains_requested=2, seed=20260918,
-            )
+            write_group_json(group_dir, make_complete_record("legacy"))
             self.assertEqual(
                 pending_models(["legacy"], group_dir, draws=800, chains=2,
                                seed=20260918, input_digests=expected),
