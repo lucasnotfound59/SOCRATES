@@ -27,7 +27,7 @@ from experiment.replication_analysis import (
     _validate_manifest_input_digests,
     validate_analysis_artifacts,
 )
-from experiment.replication_hmetad import refresh_run_manifest
+from experiment.replication_hmetad import aggregate_results, refresh_run_manifest
 
 
 MODELS = [f"model-{i}" for i in range(6)]
@@ -433,6 +433,37 @@ class ReplicationArtifactTests(unittest.TestCase):
         self._refresh_fixture_manifest(target)
         with self.assertRaisesRegex(ValueError, "m_ratio_mean is explicitly null"):
             validate_analysis_artifacts(target, model_path, human_path)
+
+    def test_audit_accepts_legitimate_failed_group_after_aggregate_read(self):
+        target, model_path, human_path = self._copy_formal_audit_fixture()
+        group_path = target / "hmetad/groups/human.json"
+        record = json.loads(group_path.read_text(encoding="utf-8"))
+        failed = {
+            "model": "human", "status": "failed", "n": 1647,
+            "draws_requested": 800, "chains_requested": 2,
+            "seed": 20260918, "input_digests": record["input_digests"],
+            "error_type": "SamplingError", "error_message": "synthetic retryable failure",
+        }
+        group_path.write_text(json.dumps(failed), encoding="utf-8")
+        aggregate_results(
+            ["human", "repl-gemma4-e2b-q4km", "repl-gemma4-e4b-q4km",
+             "repl-gemma4-26b-a4b-qat", "repl-qwen3-1.7b-q8",
+             "repl-qwen3-4b-q4km", "repl-qwen3-14b-q4km"],
+            target / "hmetad/groups", output_path=target / "hmetad_summary.csv",
+            report_path=target / "analysis_report_zh.md",
+        )
+        # Re-read the aggregate CSV as production validation does; nullable
+        # mixed columns become float64 (e.g. complete 800 -> 800.0).
+        self._refresh_fixture_manifest(target)
+        validate_analysis_artifacts(target, model_path, human_path)
+
+    def test_csv_integer_helper_rejects_fractional_and_string_values(self):
+        from experiment.replication_analysis import _strict_csv_int
+        self.assertEqual(_strict_csv_int(800.0, "summary.draws"), 800)
+        with self.assertRaisesRegex(ValueError, "integer"):
+            _strict_csv_int(800.5, "summary.draws")
+        with self.assertRaisesRegex(ValueError, "integer"):
+            _strict_csv_int("800", "summary.draws")
 
     def test_audit_rejects_self_consistent_counts_that_disagree_with_source(self):
         target, model_path, human_path = self._copy_formal_audit_fixture()

@@ -526,10 +526,22 @@ def _strict_csv_bool(value: object, label: str) -> bool:
     raise ValueError(f"{label} must be a boolean")
 
 
-def _strict_int(value: object, label: str) -> int:
-    if isinstance(value, (bool, np.bool_)) or not isinstance(value, (int, np.integer)):
+def _strict_json_int(value: object, label: str) -> int:
+    """Accept only a native JSON integer from a group record."""
+    if type(value) is not int:
         raise ValueError(f"{label} must be an integer")
     return int(value)
+
+
+def _strict_csv_int(value: object, label: str) -> int:
+    """Accept parsed integer scalars and integral float cells from CSV."""
+    if isinstance(value, (bool, np.bool_)):
+        raise ValueError(f"{label} must be an integer")
+    if isinstance(value, (int, np.integer)):
+        return int(value)
+    if isinstance(value, (float, np.floating)) and np.isfinite(value) and float(value).is_integer():
+        return int(value)
+    raise ValueError(f"{label} must be an integer")
 
 
 def _strict_json_number(value: object, label: str) -> float:
@@ -688,8 +700,8 @@ def validate_analysis_artifacts(
                 continue
             if record_value is None:
                 raise ValueError(f"Bayesian {field} is explicitly null for {model}")
-            record_int = _strict_int(record_value, f"{model}.{field}")
-            if pd.isna(summary_value) or _strict_int(summary_value, f"summary {model}.{field}") != record_int:
+            record_int = _strict_json_int(record_value, f"{model}.{field}")
+            if pd.isna(summary_value) or _strict_csv_int(summary_value, f"summary {model}.{field}") != record_int:
                 raise ValueError(f"Bayesian {field} mismatch for {model}")
         if status == "failed":
             if not str(record.get("error_type", "")).strip() or not str(record.get("error_message", "")).strip():
