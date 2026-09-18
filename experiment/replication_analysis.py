@@ -667,7 +667,7 @@ def validate_analysis_artifacts(
             # draws, chains, or error count; every field they do provide is
             # still checked against the summary rather than ignored.
             if record_value is None:
-                if pd.notna(summary_value):
+                if not pd.isna(summary_value):
                     raise ValueError(f"Bayesian {field} unexpectedly present in summary for {model}")
                 continue
             record_int = _strict_int(record_value, f"{model}.{field}")
@@ -683,7 +683,7 @@ def validate_analysis_artifacts(
                 record_value = record.get(field)
                 summary_value = row[field] if field in hmetad.columns else None
                 if record_value is None:
-                    if pd.notna(summary_value):
+                    if not pd.isna(summary_value):
                         raise ValueError(f"Bayesian {field} unexpectedly present in summary for {model}")
                     continue
                 if field == "reliable":
