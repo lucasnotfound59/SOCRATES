@@ -1,4 +1,6 @@
 import json
+import subprocess
+import sys
 import tempfile
 import unittest
 from pathlib import Path
@@ -40,6 +42,15 @@ def make_group(model="human", n_wrong=23):
 
 
 class HMetaSummaryTests(unittest.TestCase):
+    def test_direct_script_entrypoint_supports_registered_command(self):
+        script = Path(__file__).parents[1] / "replication_hmetad.py"
+        result = subprocess.run(
+            [sys.executable, str(script), "--help"],
+            capture_output=True, text=True, check=False,
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("Resumable Bayesian HMeta-d runner", result.stdout)
+
     def test_summary_reports_hdi_rhat_divergences_and_evidence(self):
         result = summarize_idata(make_fake_idata(), n_wrong=23)
         self.assertEqual(result["evidence_tier"], "regularized")

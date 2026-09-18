@@ -22,7 +22,13 @@ import arviz as az
 import numpy as np
 import pandas as pd
 
-from .replication_analysis import evidence_tier, load_human_trials, load_model_attempts
+try:
+    # Package import for ``python -m experiment.replication_hmetad`` and tests.
+    from .replication_analysis import evidence_tier, load_human_trials, load_model_attempts
+except ImportError:  # pragma: no cover - exercised by direct script execution
+    # The registered formal command invokes this file by path.  In that mode
+    # Python puts ``experiment/`` on sys.path and relative imports are invalid.
+    from replication_analysis import evidence_tier, load_human_trials, load_model_attempts
 
 try:  # Keep import errors out of non-sampling utility use.
     from metadpy.bayesian import hmetad
