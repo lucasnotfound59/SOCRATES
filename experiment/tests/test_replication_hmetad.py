@@ -2,10 +2,13 @@ import json
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 import arviz as az
 import numpy as np
 import pandas as pd
+
+from experiment.replication_analysis import evidence_tier
 
 from experiment.replication_hmetad import (
     aggregate_results,
@@ -102,6 +105,42 @@ class HMetaSummaryTests(unittest.TestCase):
         self.assertEqual(result["status"], "failed")
         self.assertEqual(result["error_type"], "ValueError")
         self.assertIn("correct", result["error_message"])
+
+    def test_model_extraction_failure_is_failed_and_never_samples(self):
+        sampler = lambda **kwargs: self.fail("sampler must not run")
+        with patch("experiment.replication_hmetad._group_model",
+                   side_effect=RuntimeError("model extraction failed")):
+            result = run_group(make_group(), 12, 2, 7, sampler=sampler)
+        self.assertEqual(result["status"], "failed")
+        self.assertEqual(result["model"], "unknown")
+        self.assertEqual(result["error_type"], "RuntimeError")
+        self.assertIn("model extraction failed", result["error_message"])
+
+    def test_evidence_and_reliability_boundaries_are_strict(self):
+        self.assertEqual(evidence_tier(9), "prior-dominated")
+        self.assertEqual(evidence_tier(10), "regularized")
+        self.assertEqual(evidence_tier(29), "regularized")
+        self.assertEqual(evidence_tier(30), "data-driven")
+
+        with patch("experiment.replication_hmetad._ratio_rhat", return_value=1.05):
+            self.assertFalse(summarize_idata(make_fake_idata(), 30)["reliable"])
+        with patch("experiment.replication_hmetad._ratio_rhat", return_value=1.049999):
+            self.assertTrue(summarize_idata(make_fake_idata(), 30)["reliable"])
+
+        posterior = {"meta_d": np.ones((2, 20)), "d1": np.ones((2, 20))}
+        exact = az.from_dict(
+            posterior=posterior,
+            sample_stats={"diverging": np.array([[True, True] + [False] * 18,
+                                                    [False] * 20])},
+        )
+        below = az.from_dict(
+            posterior=posterior,
+            sample_stats={"diverging": np.array([[True] + [False] * 19,
+                                                    [False] * 20])},
+        )
+        with patch("experiment.replication_hmetad._ratio_rhat", return_value=1.0):
+            self.assertFalse(summarize_idata(exact, 30)["reliable"])
+            self.assertTrue(summarize_idata(below, 30)["reliable"])
 
     def test_completed_group_is_reused_on_resume(self):
         with tempfile.TemporaryDirectory() as temp:

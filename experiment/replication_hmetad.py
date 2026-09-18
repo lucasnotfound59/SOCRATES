@@ -179,10 +179,12 @@ def run_group(
     if draws <= 0 or chains <= 0:
         raise ValueError("draws and chains must be positive")
     started = time.perf_counter()
+    model_error = None
     try:
         model = _group_model(group)
-    except Exception:
+    except Exception as exc:
         model = "unknown"
+        model_error = exc
     base: dict[str, object] = {
         "model": model,
         "status": "failed",
@@ -194,6 +196,16 @@ def run_group(
         "chains_requested": int(chains),
         "seed": int(seed),
     }
+    if model_error is not None:
+        base.update({
+            "error_type": type(model_error).__name__,
+            "error_message": str(model_error),
+            "reliable": False,
+            "runtime_s": float(time.perf_counter() - started),
+            "runtime": float(time.perf_counter() - started),
+            "completed_at": datetime.now(timezone.utc).isoformat(),
+        })
+        return base
     try:
         wrong = _n_wrong(group)
         base.update({"n_wrong": wrong, "error_count": wrong, "evidence_tier": evidence_tier(wrong)})
