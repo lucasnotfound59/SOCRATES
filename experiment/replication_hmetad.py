@@ -342,6 +342,51 @@ def _read_group_json(group_dir: Path, model: str) -> dict[str, Any] | None:
     return value
 
 
+def _native_complete_record_is_reusable(
+    result: Mapping[str, Any] | None,
+    *,
+    model: str,
+    draws: int | None,
+    chains: int | None,
+    seed: int | None,
+    input_digests: Mapping[str, str] | None,
+) -> bool:
+    """Require a complete, typed, input-bound posterior before resume reuse."""
+    if result is None or result.get("model") != model or result.get("status") != "complete":
+        return False
+    required_ints = ("n", "n_wrong", "error_count", "draws", "chains", "seed")
+    if any(type(result.get(field)) is not int for field in required_ints):
+        return False
+    if any(int(result[field]) <= 0 for field in ("n", "draws", "chains")):
+        return False
+    if int(result["n_wrong"]) < 0 or int(result["error_count"]) < 0:
+        return False
+    requested = {"draws_requested": draws, "chains_requested": chains, "seed": seed}
+    for field, expected in requested.items():
+        if expected is not None and type(result.get(field)) is not int:
+            return False
+        if expected is not None and int(result[field]) != int(expected):
+            return False
+    if input_digests is not None and result.get("input_digests") != dict(input_digests):
+        return False
+    if not isinstance(result.get("evidence_tier"), str) or not result["evidence_tier"].strip():
+        return False
+    if type(result.get("reliable")) is not bool:
+        return False
+    diagnostic_fields = (
+        "m_ratio_mean", "m_ratio_median", "m_ratio_sd", "mr_mean", "mr_median",
+        "post_sd", "hdi_lo", "hdi_hi", "hdi_width", "rhat", "n_divergent",
+        "divergence_rate",
+    )
+    for field in diagnostic_fields:
+        value = result.get(field)
+        if isinstance(value, bool) or not isinstance(value, (int, float)) or not np.isfinite(float(value)):
+            return False
+    if type(result.get("n_divergent")) is not int or int(result["n_divergent"]) < 0:
+        return False
+    return True
+
+
 def pending_models(
     models: Sequence[str], group_dir: Path, *, draws: int | None = None,
     chains: int | None = None, seed: int | None = None,
@@ -351,15 +396,10 @@ def pending_models(
     pending = []
     for model in models:
         result = _read_group_json(Path(group_dir), str(model))
-        reusable = result is not None and result.get("status") == "complete"
-        requested = {"draws_requested": draws, "chains_requested": chains, "seed": seed}
-        for key, expected in requested.items():
-            if expected is not None and (result is None or result.get(key) != expected):
-                reusable = False
-        if input_digests is not None and (result is None or result.get("input_digests") != dict(input_digests)):
-            # Missing digests are deliberately unsafe: an old result is never
-            # reused against an unverified input file.
-            reusable = False
+        reusable = _native_complete_record_is_reusable(
+            result, model=str(model), draws=draws, chains=chains, seed=seed,
+            input_digests=input_digests,
+        )
         if not reusable:
             pending.append(str(model))
     return pending
@@ -422,17 +462,21 @@ def update_report_bayesian(path: Path, summary: pd.DataFrame) -> Path:
         "证据等级仍只由错误数决定：`data-driven`（≥30）、`regularized`（10–29）、`prior-dominated`（<10）。",
         "可靠性另外要求错误数至少 10、R-hat < 1.05、发散比例 < 5%，且 95% HDI 边界有限；不满足时仅透明报告，不作强结论。",
     ]
-    for row in complete.itertuples(index=False):
-        lines.append(
-            f"- `{row.model}`：M-ratio={_fmt(row.m_ratio_mean)}，95% HDI [{_fmt(row.hdi_lo)}, {_fmt(row.hdi_hi)}]，"
-            f"R-hat={_fmt(row.rhat)}，发散={row.n_divergent if pd.notna(row.n_divergent) else 'NA'}，"
-            f"evidence=`{row.evidence_tier}`，reliable=`{row.reliable}`。"
-        )
-    for row in failed.itertuples(index=False):
-        message = getattr(row, "error_message", "") or getattr(row, "error_type", "")
-        lines.append(f"- `{row.model}`：`failed`（{message}）；可通过 `--resume` 重试。")
-    for row in missing.itertuples(index=False):
-        lines.append(f"- `{row.model}`：`missing`；尚未生成组结果。")
+    # Preserve aggregate row order (human, then formal family/size order)
+    # across complete, failed, and missing records alike.
+    for row in summary.itertuples(index=False):
+        status = str(getattr(row, "status", ""))
+        if status == "complete":
+            lines.append(
+                f"- `{row.model}`：M-ratio={_fmt(row.m_ratio_mean)}，95% HDI [{_fmt(row.hdi_lo)}, {_fmt(row.hdi_hi)}]，"
+                f"R-hat={_fmt(row.rhat)}，发散={row.n_divergent if pd.notna(row.n_divergent) else 'NA'}，"
+                f"evidence=`{row.evidence_tier}`，reliable=`{row.reliable}`。"
+            )
+        elif status == "failed":
+            message = getattr(row, "error_message", "") or getattr(row, "error_type", "")
+            lines.append(f"- `{row.model}`：`failed`（{message}）；可通过 `--resume` 重试。")
+        else:
+            lines.append(f"- `{row.model}`：`missing`；尚未生成组结果。")
     replacement = "\n".join(lines) + "\n\n"
     old = path.read_text(encoding="utf-8") if path.exists() else "# 中文复现分析报告\n\n"
     match = re.search(r"(?ms)^## Bayesian 状态\n.*?(?=^## |\Z)", old)
@@ -484,13 +528,8 @@ def refresh_run_manifest(
 
 
 def _load_data(args: argparse.Namespace) -> pd.DataFrame:
-    if args.data is not None:
-        data = pd.read_csv(args.data, low_memory=False)
-        if "model" not in data.columns:
-            raise ValueError("--data must contain model")
-        return data
     if args.model_results is None or args.human_master is None:
-        raise ValueError("provide --data or both --model-results and --human-master")
+        raise ValueError("provide both --model-results and --human-master")
     _, model = load_model_attempts(args.model_results)
     human = load_human_trials(args.human_master)
     return pd.concat([model, human], ignore_index=True, sort=False)
@@ -499,7 +538,6 @@ def _load_data(args: argparse.Namespace) -> pd.DataFrame:
 def _build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Resumable Bayesian HMeta-d runner")
     parser.add_argument("--analysis-dir", "--output-dir", dest="analysis_dir", type=Path, default=Path("analysis"))
-    parser.add_argument("--data", type=Path, help="validated combined CSV")
     parser.add_argument("--model-results", type=Path)
     parser.add_argument("--human-master", type=Path)
     parser.add_argument("--model")
@@ -517,6 +555,8 @@ def main(argv: Sequence[str] | None = None) -> int:
     actions = int(args.model is not None) + int(args.all) + int(args.aggregate)
     if actions != 1:
         raise SystemExit("choose exactly one of --model, --all, or --aggregate")
+    if args.aggregate and (args.model_results is None or args.human_master is None):
+        raise SystemExit("--aggregate requires --model-results and --human-master for input binding")
     analysis_dir = Path(args.analysis_dir)
     group_dir = analysis_dir / GROUP_DIRNAME
     input_digests: dict[str, str] = {}
@@ -525,8 +565,6 @@ def main(argv: Sequence[str] | None = None) -> int:
             "model": _sha256(Path(args.model_results).expanduser().resolve()),
             "human": _sha256(Path(args.human_master).expanduser().resolve()),
         }
-    elif args.data is not None:
-        input_digests = {"data": _sha256(Path(args.data).expanduser().resolve())}
     data = None
     if args.model is not None or args.all:
         data = _load_data(args)
@@ -547,14 +585,12 @@ def main(argv: Sequence[str] | None = None) -> int:
                 input_digests=input_digests,
             )
             write_group_json(group_dir, result)
-    elif args.data is not None or (args.model_results is not None and args.human_master is not None):
+    elif args.model_results is not None and args.human_master is not None:
         data = _load_data(args)
         models = sorted(data["model"].dropna().astype(str).drop_duplicates().tolist(), key=_model_sort_key)
     else:
-        summary_path = analysis_dir / "human_model_summary.csv"
-        if not summary_path.exists():
-            raise SystemExit("--aggregate needs --data/input paths or human_model_summary.csv")
-        models = pd.read_csv(summary_path)["model"].astype(str).tolist()
+        data = _load_data(args)
+        models = sorted(data["model"].dropna().astype(str).drop_duplicates().tolist(), key=_model_sort_key)
     aggregate_results(
         models,
         group_dir,

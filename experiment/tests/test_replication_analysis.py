@@ -6,6 +6,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 import pandas as pd
+import experiment.replication_analysis as replication_analysis_module
 
 from experiment.replication_analysis import (
     data_quality_table,
@@ -21,6 +22,7 @@ from experiment.replication_analysis import (
     bootstrap_all,
     _mratio_plot_data,
     _ranked_models,
+    plot_bayes_mratio_vs_errors,
     _strict_csv_bool,
     _strict_csv_number,
     _validate_formal_model_labels,
@@ -30,7 +32,11 @@ from experiment.replication_analysis import (
 from experiment.replication_hmetad import aggregate_results, refresh_run_manifest
 
 
-MODELS = [f"model-{i}" for i in range(6)]
+MODELS = [
+    "repl-gemma4-e2b-q4km", "repl-gemma4-e4b-q4km",
+    "repl-gemma4-26b-a4b-qat", "repl-qwen3-1.7b-q8",
+    "repl-qwen3-4b-q4km", "repl-qwen3-14b-q4km",
+]
 
 
 def make_model_attempts(models=6, items=400, samples=4):
@@ -89,7 +95,7 @@ class ReplicationInputTests(unittest.TestCase):
             "repl-qwen3-4b-q4km", "repl-qwen3-14b-q4km",
         ]
         self.assertEqual(_validate_formal_model_labels(labels), set(labels))
-        with self.assertRaisesRegex(ValueError, "formal model labels"):
+        with self.assertRaisesRegex(ValueError, "(expected 6 models|formal model labels)"):
             _validate_formal_model_labels([*labels[:-1], "repl-qwen3-32b-q4km"])
 
     def test_manifest_input_digest_contract_rejects_changed_bytes(self):
@@ -120,6 +126,38 @@ class ReplicationInputTests(unittest.TestCase):
         attempts = make_model_attempts()
         attempts.iloc[1] = attempts.iloc[0]
         with self.assertRaisesRegex(ValueError, "unique task keys"):
+            validate_model_attempts(attempts)
+
+    def test_formal_input_requires_registered_labels_and_complete_item_sample_design(self):
+        attempts = make_model_attempts()
+        attempts.loc[0, "model"] = "substituted-model"
+        with self.assertRaisesRegex(ValueError, "(expected 6 models|formal model labels)"):
+            validate_model_attempts(attempts)
+
+        attempts = make_model_attempts()
+        attempts.loc[0, "item_id"] = "I400"
+        with self.assertRaisesRegex(ValueError, "400 items"):
+            validate_model_attempts(attempts)
+
+        attempts = make_model_attempts()
+        attempts.loc[0, "sample_idx"] = 4
+        with self.assertRaisesRegex(ValueError, "sample_idx"):
+            validate_model_attempts(attempts)
+
+        attempts = make_model_attempts()
+        attempts.loc[0, "item_id"] = "I400"
+        attempts.loc[0, "sample_idx"] = 0
+        with self.assertRaisesRegex(ValueError, "400 items"):
+            validate_model_attempts(attempts)
+
+    def test_formal_input_requires_common_cross_model_item_metadata(self):
+        attempts = make_model_attempts()
+        attempts.loc[400:403, "type"] = "学科"
+        with self.assertRaisesRegex(ValueError, "metadata.*consistent"):
+            validate_model_attempts(attempts)
+        attempts = make_model_attempts()
+        attempts.loc[1, "type"] = "学科"
+        with self.assertRaisesRegex(ValueError, "metadata.*unique"):
             validate_model_attempts(attempts)
 
     def test_human_loader_returns_only_valid_chinese_human_rows(self):
@@ -285,6 +323,80 @@ class ReplicationBootstrapTests(unittest.TestCase):
 
 
 class ReplicationArtifactTests(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        """Build a privacy-safe formal-sized audit fixture when no run exists."""
+        cls._fixture_temp = tempfile.TemporaryDirectory()
+        root = Path(cls._fixture_temp.name)
+        cls._fixture_analysis = root / "analysis"
+        cls._fixture_model = root / "model.csv"
+        cls._fixture_human = root / "human.csv"
+        model = make_model_attempts()
+        model.loc[:2, "parse_ok"] = False
+        model.loc[:2, "parsed_answer"] = ""
+        hallucination_model = model["item_id"].isin({"I000", "I001", "I002", "I003"})
+        model.loc[hallucination_model, "type"] = "幻觉"
+        model.loc[model["item_id"].isin({"I000", "I001"}), "gold"] = "False"
+        model.loc[model["item_id"].isin({"I000", "I001"}), "parsed_answer"] = "False"
+        model.loc[model["item_id"].isin({"I002", "I003"}), "gold"] = "True"
+        model.loc[model["item_id"].isin({"I002", "I003"}), "parsed_answer"] = "True"
+        model.to_csv(cls._fixture_model, index=False)
+        human = pd.DataFrame([{
+            "model": "human", "language": "zh", "status": "ok",
+            "participant_id": f"fixture-p{index % 17}", "item_id": f"H{index:04d}",
+            "sample_idx": 0,
+            "gold": "False" if index < 100 else ("True" if index < 200 else "True"),
+            "parsed_answer": "False" if index < 100 else ("True" if index < 200 else "True"),
+            "confidence": 4, "type": "幻觉" if index < 200 else "常规",
+            "subtype": "基础", "difficulty": "易",
+        } for index in range(1647)])
+        human.to_csv(cls._fixture_human, index=False)
+        from experiment.replication_analysis import run_analysis, load_human_trials, load_model_attempts
+        run_analysis(cls._fixture_model, cls._fixture_human, cls._fixture_analysis,
+                     nboot_metrics=2, nboot_mratio=1)
+        manifest_path = cls._fixture_analysis / "run_manifest.json"
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+        manifest["bootstrap"] = {"nboot_metrics": 800, "nboot_mratio": 250}
+        manifest["bootstrap_counts"] = {"metrics": 800, "mratio": 250}
+        manifest_path.write_text(json.dumps(manifest) + "\n", encoding="utf-8")
+        from experiment.replication_hmetad import aggregate_results
+        digest = {
+            "model": __import__("hashlib").sha256(cls._fixture_model.read_bytes()).hexdigest(),
+            "human": __import__("hashlib").sha256(cls._fixture_human.read_bytes()).hexdigest(),
+        }
+        _, valid_model = load_model_attempts(cls._fixture_model)
+        human_valid = load_human_trials(cls._fixture_human)
+        source_frames = {"human": human_valid}
+        source_frames.update({model: valid_model.loc[valid_model["model"].eq(model)] for model in MODELS})
+        counts = {model: len(frame) for model, frame in source_frames.items()}
+        group_dir = cls._fixture_analysis / "hmetad" / "groups"
+        group_dir.mkdir(parents=True, exist_ok=True)
+        labels = ["human", *MODELS]
+        for label in labels:
+            record = {
+                "model": label, "status": "complete", "n": counts[label],
+                "n_wrong": int((~source_frames[label]["correct"].astype(bool)).sum()),
+                "error_count": int((~source_frames[label]["correct"].astype(bool)).sum()),
+                "evidence_tier": evidence_tier(int((~source_frames[label]["correct"].astype(bool)).sum())),
+                "draws_requested": 800, "chains_requested": 2, "draws": 4,
+                "chains": 2, "seed": 20260918, "input_digests": digest,
+                "m_ratio_mean": 1.0, "m_ratio_median": 1.0, "m_ratio_sd": 0.1,
+                "mr_mean": 1.0, "mr_median": 1.0, "post_sd": 0.1,
+                "hdi_lo": 0.8, "hdi_hi": 1.2, "hdi_width": 0.4,
+                "rhat": 1.01, "n_divergent": 0, "divergence_rate": 0.0,
+                "reliable": True,
+            }
+            write_path = group_dir / (label.replace("/", "_") + ".json")
+            write_path.write_text(json.dumps(record) + "\n", encoding="utf-8")
+        aggregate_results(labels, group_dir,
+                         output_path=cls._fixture_analysis / "hmetad_summary.csv",
+                         report_path=cls._fixture_analysis / "analysis_report_zh.md")
+        refresh_run_manifest(cls._fixture_analysis, draws=800, chains=2, seed=20260918)
+
+    @classmethod
+    def tearDownClass(cls):
+        cls._fixture_temp.cleanup()
+
     def setUp(self):
         self.temp_dir = tempfile.TemporaryDirectory()
         self.output_dir = Path(self.temp_dir.name) / "analysis"
@@ -293,18 +405,22 @@ class ReplicationArtifactTests(unittest.TestCase):
         self.temp_dir.cleanup()
 
     def _copy_formal_audit_fixture(self):
-        root = Path(__file__).resolve().parents[2]
-        source = root / "results/replication_zh_2026-09-18/analysis"
-        model_path = root / "results/replication_zh_2026-09-18/results_local_zh_2026-09-18.csv"
-        human_path = root / "experiment/results/master_long.csv"
-        if not source.is_dir() or not model_path.is_file() or not human_path.is_file():
-            self.skipTest("formal generated artifacts are required for adversarial audit tests")
         target = Path(self.temp_dir.name) / "formal-analysis"
-        shutil.copytree(source, target)
-        return target, model_path, human_path
+        shutil.copytree(self._fixture_analysis, target)
+        return target, self._fixture_model, self._fixture_human
 
     def _refresh_fixture_manifest(self, target):
         refresh_run_manifest(target, draws=800, chains=2, seed=20260918)
+
+    def _validate(self, target, model_path, human_path):
+        """Use the same validator with a cheap exact test bootstrap fixture."""
+        original_bootstrap = replication_analysis_module.bootstrap_all
+
+        def test_bootstrap(data, **_kwargs):
+            return original_bootstrap(data, nboot_metrics=2, nboot_mratio=1, seed=20260918)
+
+        with patch.object(replication_analysis_module, "bootstrap_all", side_effect=test_bootstrap):
+            return validate_analysis_artifacts(target, model_path, human_path)
 
     def test_audit_rejects_failed_group_without_digest_and_with_wrong_n(self):
         target, model_path, human_path = self._copy_formal_audit_fixture()
@@ -328,7 +444,7 @@ class ReplicationArtifactTests(unittest.TestCase):
         comparison.to_csv(comparison_path, index=False)
         self._refresh_fixture_manifest(target)
         with self.assertRaisesRegex(ValueError, "Bayesian (group counts disagree with loaded source inputs|input digest mismatch)"):
-            validate_analysis_artifacts(target, model_path, human_path)
+            self._validate(target, model_path, human_path)
 
     def test_audit_rejects_nan_complete_diagnostic(self):
         target, model_path, human_path = self._copy_formal_audit_fixture()
@@ -342,7 +458,7 @@ class ReplicationArtifactTests(unittest.TestCase):
         summary.to_csv(summary_path, index=False)
         self._refresh_fixture_manifest(target)
         with self.assertRaisesRegex(ValueError, "m_ratio_mean must be a finite number"):
-            validate_analysis_artifacts(target, model_path, human_path)
+            self._validate(target, model_path, human_path)
 
     def test_audit_rejects_nullable_complete_reliable(self):
         target, model_path, human_path = self._copy_formal_audit_fixture()
@@ -357,7 +473,7 @@ class ReplicationArtifactTests(unittest.TestCase):
         summary.to_csv(summary_path, index=False)
         self._refresh_fixture_manifest(target)
         with self.assertRaisesRegex(ValueError, "reliable must be a boolean"):
-            validate_analysis_artifacts(target, model_path, human_path)
+            self._validate(target, model_path, human_path)
 
     def test_audit_rejects_json_numeric_string_m_ratio(self):
         target, model_path, human_path = self._copy_formal_audit_fixture()
@@ -367,7 +483,7 @@ class ReplicationArtifactTests(unittest.TestCase):
         group_path.write_text(json.dumps(record), encoding="utf-8")
         self._refresh_fixture_manifest(target)
         with self.assertRaisesRegex(ValueError, "m_ratio_mean must be a finite number"):
-            validate_analysis_artifacts(target, model_path, human_path)
+            self._validate(target, model_path, human_path)
 
     def test_audit_rejects_json_numeric_string_rhat(self):
         target, model_path, human_path = self._copy_formal_audit_fixture()
@@ -377,7 +493,7 @@ class ReplicationArtifactTests(unittest.TestCase):
         group_path.write_text(json.dumps(record), encoding="utf-8")
         self._refresh_fixture_manifest(target)
         with self.assertRaisesRegex(ValueError, "rhat must be a finite number"):
-            validate_analysis_artifacts(target, model_path, human_path)
+            self._validate(target, model_path, human_path)
 
     def test_audit_rejects_json_boolean_string_reliable(self):
         target, model_path, human_path = self._copy_formal_audit_fixture()
@@ -387,18 +503,16 @@ class ReplicationArtifactTests(unittest.TestCase):
         group_path.write_text(json.dumps(record), encoding="utf-8")
         self._refresh_fixture_manifest(target)
         with self.assertRaisesRegex(ValueError, "reliable must be a boolean"):
-            validate_analysis_artifacts(target, model_path, human_path)
+            self._validate(target, model_path, human_path)
 
     def test_audit_rejects_failed_record_with_stale_summary_diagnostics(self):
         target, model_path, human_path = self._copy_formal_audit_fixture()
         group_path = target / "hmetad/groups/human.json"
         record = json.loads(group_path.read_text(encoding="utf-8"))
         record.update({"status": "failed", "error_type": "TestFailure", "error_message": "synthetic"})
-        for field in ("n_wrong", "error_count", "evidence_tier"):
-            record.pop(field, None)
         for field in ("m_ratio_mean", "m_ratio_median", "m_ratio_sd", "mr_mean", "mr_median",
                       "post_sd", "hdi_lo", "hdi_hi", "hdi_width", "rhat", "n_divergent",
-                      "divergence_rate", "reliable", "evidence_tier"):
+                      "divergence_rate", "reliable"):
             record.pop(field, None)
         group_path.write_text(json.dumps(record), encoding="utf-8")
         summary_path = target / "hmetad_summary.csv"
@@ -406,19 +520,19 @@ class ReplicationArtifactTests(unittest.TestCase):
         for column in ("status", "n_wrong", "error_count", "evidence_tier", "error_type", "error_message"):
             summary[column] = summary[column].astype(object)
         summary.loc[summary["model"].eq("human"), ["status", "n_wrong", "error_count", "evidence_tier", "error_type", "error_message"]] = [
-            "failed", pd.NA, pd.NA, pd.NA, "TestFailure", "synthetic"
+            "failed", 0, 0, "prior-dominated", "TestFailure", "synthetic"
         ]
         summary.to_csv(summary_path, index=False)
         self._refresh_fixture_manifest(target)
         with self.assertRaisesRegex(ValueError, "unexpectedly present in summary"):
-            validate_analysis_artifacts(target, model_path, human_path)
+            self._validate(target, model_path, human_path)
 
     def test_audit_rejects_explicit_null_failed_diagnostic(self):
         target, model_path, human_path = self._copy_formal_audit_fixture()
         group_path = target / "hmetad/groups/human.json"
         record = json.loads(group_path.read_text(encoding="utf-8"))
         record.update({"status": "failed", "error_type": "TestFailure", "error_message": "synthetic"})
-        for field in ("n_wrong", "error_count", "evidence_tier", "draws", "chains"):
+        for field in ("draws", "chains"):
             record.pop(field, None)
         record["m_ratio_mean"] = None
         group_path.write_text(json.dumps(record), encoding="utf-8")
@@ -427,12 +541,12 @@ class ReplicationArtifactTests(unittest.TestCase):
         for column in ("status", "n_wrong", "error_count", "evidence_tier", "draws", "chains", "error_type", "error_message", "m_ratio_mean"):
             summary[column] = summary[column].astype(object)
         summary.loc[summary["model"].eq("human"), ["status", "n_wrong", "error_count", "evidence_tier", "draws", "chains", "error_type", "error_message", "m_ratio_mean"]] = [
-            "failed", pd.NA, pd.NA, pd.NA, pd.NA, pd.NA, "TestFailure", "synthetic", pd.NA
+            "failed", 0, 0, "prior-dominated", pd.NA, pd.NA, "TestFailure", "synthetic", pd.NA
         ]
         summary.to_csv(summary_path, index=False)
         self._refresh_fixture_manifest(target)
         with self.assertRaisesRegex(ValueError, "m_ratio_mean is explicitly null"):
-            validate_analysis_artifacts(target, model_path, human_path)
+            self._validate(target, model_path, human_path)
 
     def test_audit_accepts_legitimate_failed_group_after_aggregate_read(self):
         target, model_path, human_path = self._copy_formal_audit_fixture()
@@ -440,6 +554,7 @@ class ReplicationArtifactTests(unittest.TestCase):
         record = json.loads(group_path.read_text(encoding="utf-8"))
         failed = {
             "model": "human", "status": "failed", "n": 1647,
+            "n_wrong": 0, "error_count": 0, "evidence_tier": "prior-dominated",
             "draws_requested": 800, "chains_requested": 2,
             "seed": 20260918, "input_digests": record["input_digests"],
             "error_type": "SamplingError", "error_message": "synthetic retryable failure",
@@ -455,7 +570,7 @@ class ReplicationArtifactTests(unittest.TestCase):
         # Re-read the aggregate CSV as production validation does; nullable
         # mixed columns become float64 (e.g. complete 800 -> 800.0).
         self._refresh_fixture_manifest(target)
-        validate_analysis_artifacts(target, model_path, human_path)
+        self._validate(target, model_path, human_path)
 
     def test_csv_integer_helper_rejects_fractional_and_string_values(self):
         from experiment.replication_analysis import _strict_csv_int
@@ -481,7 +596,7 @@ class ReplicationArtifactTests(unittest.TestCase):
         comparison.to_csv(comparison_path, index=False)
         self._refresh_fixture_manifest(target)
         with self.assertRaisesRegex(ValueError, "loaded source inputs"):
-            validate_analysis_artifacts(target, model_path, human_path)
+            self._validate(target, model_path, human_path)
 
     def test_run_analysis_writes_isolated_complete_artifacts(self):
         from experiment.replication_analysis import run_analysis
@@ -596,3 +711,55 @@ class ReplicationArtifactTests(unittest.TestCase):
         self.assertEqual(result, 0)
         audit.assert_called_once()
         self.assertEqual(printer.call_args_list[-1].args, ("ANALYSIS_AUDIT_OK",))
+
+
+class BayesMratioFigureTests(unittest.TestCase):
+    """The all-groups figure must plot every group and never drop or reorder one."""
+
+    @staticmethod
+    def _frame():
+        return pd.DataFrame({
+            "model": ["human", "model-a", "model-b", "model-c"],
+            "n_wrong": [437, 0, 12, 40],
+            "mr_mean": [1.334, 1.071, 0.300, 0.800],
+            "hdi_lo": [1.160, 0.926, 0.100, 0.700],
+            "hdi_hi": [1.522, 1.231, 0.500, 0.900],
+            "reliable": [True, False, False, True],
+        })
+
+    def test_plots_every_group_ordered_by_error_count(self):
+        with tempfile.TemporaryDirectory() as temp:
+            out = Path(temp) / "fig.png"
+            path = plot_bayes_mratio_vs_errors(self._frame(), out)
+            self.assertTrue(path.is_file())
+            self.assertGreater(path.stat().st_size, 0)
+
+    def test_rejects_frame_missing_required_columns(self):
+        frame = self._frame().drop(columns=["hdi_hi"])
+        with tempfile.TemporaryDirectory() as temp:
+            with self.assertRaisesRegex(ValueError, "missing columns"):
+                plot_bayes_mratio_vs_errors(frame, Path(temp) / "fig.png")
+
+    def test_rejects_frame_without_a_finite_estimate(self):
+        frame = self._frame()
+        frame["mr_mean"] = float("nan")
+        with tempfile.TemporaryDirectory() as temp:
+            with self.assertRaisesRegex(ValueError, "no groups with a finite"):
+                plot_bayes_mratio_vs_errors(frame, Path(temp) / "fig.png")
+
+    def test_reliable_flag_tolerates_csv_booleans(self):
+        frame = self._frame()
+        frame["reliable"] = ["True", "False", "False", "True"]
+        with tempfile.TemporaryDirectory() as temp:
+            path = plot_bayes_mratio_vs_errors(frame, Path(temp) / "fig.png")
+            self.assertTrue(path.is_file())
+
+    def test_missing_reliable_column_is_treated_as_unreliable(self):
+        frame = self._frame().drop(columns=["reliable"])
+        with tempfile.TemporaryDirectory() as temp:
+            path = plot_bayes_mratio_vs_errors(frame, Path(temp) / "fig.png")
+            self.assertTrue(path.is_file())
+
+
+if __name__ == "__main__":
+    unittest.main()

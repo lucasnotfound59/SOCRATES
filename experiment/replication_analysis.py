@@ -383,7 +383,7 @@ def _normalise(frame: pd.DataFrame, cluster_from: str = "item_id") -> pd.DataFra
 
 
 def validate_model_attempts(attempts: pd.DataFrame) -> None:
-    missing = [c for c in FORMAL_KEY if c not in attempts.columns]
+    missing = [c for c in (*FORMAL_KEY, "gold", "type", "subtype", "difficulty") if c not in attempts.columns]
     if missing:
         raise ValueError(f"missing formal key columns: {missing}")
     if len(attempts) != EXPECTED_TOTAL_ATTEMPTS:
@@ -401,9 +401,46 @@ def validate_model_attempts(attempts: pd.DataFrame) -> None:
         raise ValueError("model attempts must be Chinese rows")
     if canonical["model"].nunique() != EXPECTED_MODELS:
         raise ValueError(f"expected {EXPECTED_MODELS} models")
+    _validate_formal_model_labels(canonical["model"])
+    if canonical["sample_idx"].isna().any() or not np.equal(
+        canonical["sample_idx"].to_numpy(dtype=float),
+        np.floor(canonical["sample_idx"].to_numpy(dtype=float)),
+    ).all():
+        raise ValueError("sample_idx must contain integer values")
     counts = canonical.groupby("model", dropna=False).size()
     if not (counts == EXPECTED_ATTEMPTS_PER_MODEL).all():
         raise ValueError(f"each model must have {EXPECTED_ATTEMPTS_PER_MODEL} attempts")
+    # The formal file is a complete 400-item x 4-sample design for each of
+    # the six registered model labels.  Counting rows alone would allow a
+    # coordinated substitution of item IDs or sample indices to pass.
+    for model, group in canonical.groupby("model", sort=False):
+        item_counts = group.groupby("item_id", sort=False).size()
+        if len(item_counts) != 400 or not item_counts.eq(4).all():
+            raise ValueError(f"{model} must contain exactly 400 items with four samples each")
+        sample_sets = group.groupby("item_id", sort=False)["sample_idx"].agg(lambda values: tuple(sorted(values.astype(int))))
+        if not sample_sets.map(lambda values: values == (0, 1, 2, 3)).all():
+            raise ValueError(f"{model} items must contain sample_idx values 0,1,2,3 exactly")
+    # Cross-condition design: all six models must receive the same item set,
+    # and item-level metadata must agree across model conditions.  Answers,
+    # confidence, and parse outcomes are condition-specific and are not part
+    # of this invariance check.
+    canonical["gold"] = _text(canonical, "gold").str.lower()
+    for column in ("type", "subtype", "difficulty"):
+        canonical[column] = _text(canonical, column)
+    reference_model = sorted(FORMAL_MODEL_LABELS, key=_model_sort_key)[0]
+    reference = canonical.loc[canonical["model"].eq(reference_model)]
+    reference_items = set(reference["item_id"])
+    reference_meta = reference.groupby("item_id", sort=False)[["language", "gold", "type", "subtype", "difficulty"]].first()
+    for model in sorted(FORMAL_MODEL_LABELS, key=_model_sort_key):
+        group = canonical.loc[canonical["model"].eq(model)]
+        if set(group["item_id"]) != reference_items:
+            raise ValueError("all formal models must share the same item_id design")
+        for item_id, item_rows in group.groupby("item_id", sort=False):
+            if item_rows[["language", "gold", "type", "subtype", "difficulty"]].nunique(dropna=False).gt(1).any():
+                raise ValueError("formal item metadata must be unique within each model/item")
+        meta = group.groupby("item_id", sort=False)[["language", "gold", "type", "subtype", "difficulty"]].first()
+        if not meta.sort_index().equals(reference_meta.sort_index()):
+            raise ValueError("formal item metadata must be consistent across models")
 
 
 def load_model_attempts(path: Path) -> tuple[pd.DataFrame, pd.DataFrame]:
@@ -440,7 +477,8 @@ def data_quality_table(attempts: pd.DataFrame) -> pd.DataFrame:
     finish = _text(attempts, "finish_reason").str.lower()
     has_error = _text(attempts, "error").ne("")
     rows = []
-    for model, group in attempts.groupby("model", dropna=False):
+    for model in _ordered_models(attempts):
+        group = attempts.loc[attempts["model"].astype(str).eq(model)]
         idx = group.index
         invalid = ~valid.loc[idx]
         truncated = invalid & finish.loc[idx].eq("length")
@@ -482,11 +520,14 @@ def _safe_output_dir(output_dir: Path) -> Path:
     """Resolve an output path and reject the legacy analysis locations."""
     resolved = Path(output_dir).expanduser().resolve()
     experiment = Path(__file__).resolve().parent
+    legacy_root = (experiment / "results").resolve()
     forbidden = {
-        (experiment / "results" / "analysis").resolve(),
-        (experiment / "results" / "figures").resolve(),
+        (legacy_root / "analysis").resolve(),
+        (legacy_root / "figures").resolve(),
     }
-    if resolved in forbidden:
+    # Reject the whole legacy results tree, including subdirectories whose
+    # names could otherwise evade the exact-path guard.
+    if resolved in forbidden or legacy_root in resolved.parents:
         raise ValueError(
             "output_dir must be isolated; experiment/results/analysis and "
             "experiment/results/figures are forbidden"
@@ -584,6 +625,35 @@ def _validate_manifest_input_digests(
             raise ValueError(f"manifest {label} input sha256 does not match current input")
 
 
+def _assert_recomputed_table(actual: pd.DataFrame, expected: pd.DataFrame, label: str) -> None:
+    """Compare a deterministic artifact with values recomputed from inputs.
+
+    CSV round-tripping changes integer/nullable dtypes, so the comparison is
+    deliberately column- and cell-based while remaining strict about row and
+    column order.  Numeric NaN is the only accepted missing-value equivalence.
+    """
+    if list(actual.columns) != list(expected.columns) or len(actual) != len(expected):
+        raise ValueError(f"{label} schema/row order differs from current inputs")
+    for column in expected.columns:
+        left, right = actual[column], expected[column]
+        for index, (left_value, right_value) in enumerate(zip(left, right)):
+            left_missing, right_missing = pd.isna(left_value), pd.isna(right_value)
+            if left_missing or right_missing:
+                if not (left_missing and right_missing):
+                    raise ValueError(f"{label}.{column}[{index}] differs from current inputs")
+                continue
+            if isinstance(right_value, (int, float, np.integer, np.floating)) and not isinstance(right_value, (bool, np.bool_)):
+                try:
+                    left_number = float(left_value)
+                    right_number = float(right_value)
+                except (TypeError, ValueError):
+                    raise ValueError(f"{label}.{column}[{index}] is not numeric")
+                if not np.isclose(left_number, right_number, rtol=1e-10, atol=1e-12):
+                    raise ValueError(f"{label}.{column}[{index}] differs from current inputs")
+            elif str(left_value) != str(right_value):
+                raise ValueError(f"{label}.{column}[{index}] differs from current inputs")
+
+
 _REQUIRED_FORMAL_ARTIFACTS = {
     "data_quality.csv", "model_summary.csv", "human_model_summary.csv",
     "by_type.csv", "by_difficulty.csv", "confidence_distribution.csv",
@@ -629,6 +699,14 @@ def validate_analysis_artifacts(
     if len(model_summary) != EXPECTED_MODELS or len(comparison) != 7 or len(metad) != 7 or len(bootstrap) != 7 or len(hmetad) != 7:
         raise ValueError("formal table row counts do not match protocol")
     model_names = _validate_formal_model_labels(model_summary["model"])
+    expected_model_order = sorted(FORMAL_MODEL_LABELS, key=_model_sort_key)
+    expected_comparison_order = ["human", *expected_model_order]
+    if model_summary["model"].astype(str).tolist() != expected_model_order:
+        raise ValueError("model_summary rows are not in the registered formal order")
+    for label, frame in (("human_model_summary", comparison), ("metad_summary", metad),
+                         ("bootstrap_summary", bootstrap), ("hmetad_summary", hmetad)):
+        if frame["model"].astype(str).tolist() != expected_comparison_order:
+            raise ValueError(f"{label} rows are not in human-then-formal order")
     comparison_names = set(comparison["model"].astype(str))
     if comparison_names != model_names | {"human"} or set(metad["model"].astype(str)) != comparison_names:
         raise ValueError("model names disagree across comparison tables")
@@ -639,12 +717,118 @@ def validate_analysis_artifacts(
     if not comparison_n.equals(hmetad_n.reindex(comparison_n.index)):
         raise ValueError("Bayesian group counts disagree with human_model_summary.csv")
     source_counts = {"human": len(human)}
+    source_wrong = {"human": int((~human["correct"].astype(bool)).sum())}
     source_counts.update({
         model: int((valid_model["model"].astype(str) == model).sum())
         for model in model_names
     })
+    source_wrong.update({
+        model: int((~valid_model.loc[valid_model["model"].astype(str).eq(model), "correct"].astype(bool)).sum())
+        for model in model_names
+    })
     if any(int(comparison_n[model]) != source_counts[model] for model in comparison_names):
         raise ValueError("Bayesian group counts disagree with loaded source inputs")
+
+    # Recompute every deterministic non-Bayesian table from the fresh input
+    # bytes.  Manifest/hash consistency alone cannot detect a coherent edit
+    # to a table followed by a refreshed manifest.
+    matched = pd.concat([valid_model, human], ignore_index=True, sort=False)
+    metad_rows = []
+    for model_name in _ordered_models(matched):
+        fit = fit_metad(matched.loc[matched["model"].astype(str).eq(model_name)])
+        fit["model"] = model_name
+        metad_rows.append(fit)
+    expected_tables = {
+        "data_quality.csv": data_quality_table(all_model),
+        "model_summary.csv": summarize_groups(valid_model),
+        "human_model_summary.csv": summarize_groups(matched),
+        "by_type.csv": summarize_factor(matched, "type", ["常规", "学科", "陷阱", "幻觉"]),
+        "by_difficulty.csv": summarize_factor(matched, "difficulty", ["易", "中", "难"]),
+        "confidence_distribution.csv": confidence_distribution(matched),
+        "reliability.csv": reliability_table(matched),
+        "hallucination_breakdown.csv": hallucination_breakdown(matched),
+        "hallucination_sdt.csv": hallucination_sdt(matched),
+        "metad_summary.csv": pd.DataFrame(metad_rows, columns=[
+            "model", "dprime", "meta_d", "m_ratio", "m_diff", "n", "n_wrong",
+            "evidence_tier", "fit_status",
+        ]),
+    }
+    actual_tables = {
+        "data_quality.csv": quality, "model_summary.csv": model_summary,
+        "human_model_summary.csv": comparison,
+        "by_type.csv": pd.read_csv(output / "by_type.csv"),
+        "by_difficulty.csv": pd.read_csv(output / "by_difficulty.csv"),
+        "confidence_distribution.csv": pd.read_csv(output / "confidence_distribution.csv"),
+        "reliability.csv": pd.read_csv(output / "reliability.csv"),
+        "hallucination_breakdown.csv": pd.read_csv(output / "hallucination_breakdown.csv"),
+        "hallucination_sdt.csv": pd.read_csv(output / "hallucination_sdt.csv"),
+        "metad_summary.csv": metad,
+    }
+    for name, expected in expected_tables.items():
+        _assert_recomputed_table(actual_tables[name], expected, name)
+
+    # The fixed formal bootstrap is reproducible from the current input
+    # bytes; never cache this expected frame because a mutable cache could
+    # itself become an audit bypass.
+    expected_bootstrap = bootstrap_all(matched, nboot_metrics=800, nboot_mratio=250, seed=RANDOM_SEED)
+    _assert_recomputed_table(bootstrap, expected_bootstrap, "bootstrap_summary.csv")
+
+    # Every emitted model-bearing CSV follows the same canonical sequence;
+    # checking only sets would allow swapped rows to remain numerically
+    # self-consistent.
+    for name, frame, order in (
+        ("data_quality.csv", quality, expected_model_order),
+        ("by_type.csv", actual_tables["by_type.csv"], expected_comparison_order),
+        ("by_difficulty.csv", actual_tables["by_difficulty.csv"], expected_comparison_order),
+        ("confidence_distribution.csv", actual_tables["confidence_distribution.csv"], expected_comparison_order),
+        ("reliability.csv", actual_tables["reliability.csv"], expected_comparison_order),
+        ("hallucination_breakdown.csv", actual_tables["hallucination_breakdown.csv"], expected_comparison_order),
+        ("hallucination_sdt.csv", actual_tables["hallucination_sdt.csv"], expected_comparison_order),
+    ):
+        if "model" not in frame.columns:
+            raise ValueError(f"{name} is missing model ordering column")
+        observed = frame["model"].astype(str).drop_duplicates().tolist()
+        if observed != order:
+            raise ValueError(f"{name} rows are not in canonical model order")
+
+    expected_bootstrap_order = expected_comparison_order
+    if bootstrap["model"].astype(str).tolist() != expected_bootstrap_order:
+        raise ValueError("bootstrap_summary rows are not in formal order")
+    for _, row in bootstrap.iterrows():
+        model_name = str(row["model"])
+        expected_row = expected_tables["human_model_summary.csv"].set_index("model").loc[model_name]
+        for column in ("n", "n_wrong", "evidence_tier"):
+            if column not in bootstrap or str(row[column]) != str(expected_row[column]):
+                raise ValueError(f"bootstrap {model_name}.{column} disagrees with current inputs")
+        expected_metad = expected_tables["metad_summary.csv"].set_index("model").loc[model_name]
+        point_pairs = {
+            "accuracy": expected_row["accuracy"], "ece": expected_row["ece"],
+            "overconfidence": expected_row["overconfidence"],
+            "type2_auroc": expected_row["type2_auroc"],
+            "dprime": expected_metad["dprime"], "meta_d": expected_metad["meta_d"],
+            "m_ratio": expected_metad["m_ratio"], "m_diff": expected_metad["m_diff"],
+            "fit_status": expected_metad["fit_status"],
+        }
+        for column, expected_value in point_pairs.items():
+            actual_value = row.get(column)
+            if isinstance(expected_value, str):
+                if str(actual_value) != expected_value:
+                    raise ValueError(f"bootstrap {model_name}.{column} disagrees with current inputs")
+            elif pd.isna(expected_value):
+                if pd.notna(actual_value):
+                    raise ValueError(f"bootstrap {model_name}.{column} disagrees with current inputs")
+            elif pd.isna(actual_value) or not np.isclose(float(actual_value), float(expected_value), rtol=1e-10, atol=1e-12):
+                raise ValueError(f"bootstrap {model_name}.{column} disagrees with current inputs")
+    if not {"n", "n_wrong", "evidence_tier", "mratio_boot_status"}.issubset(bootstrap.columns):
+        raise ValueError("bootstrap_summary is missing its reproducibility contract columns")
+    for _, row in bootstrap.iterrows():
+        tier = str(row["evidence_tier"])
+        status = str(row["mratio_boot_status"])
+        lo, hi = pd.to_numeric(row.get("m_ratio_lo"), errors="coerce"), pd.to_numeric(row.get("m_ratio_hi"), errors="coerce")
+        if tier != "data-driven" and (status != "skipped_insufficient_errors" or pd.notna(lo) or pd.notna(hi)):
+            raise ValueError("non-data-driven M-ratio intervals must be explicitly skipped and blank")
+        if tier == "data-driven" and status == "ok" and (pd.isna(lo) or pd.isna(hi) or float(lo) > float(hi)):
+            raise ValueError("data-driven M-ratio interval is not estimable/ordered")
 
     manifest = json.loads((output / "run_manifest.json").read_text(encoding="utf-8"))
     if manifest.get("random_seed") != RANDOM_SEED or manifest.get("bootstrap") != {"nboot_metrics": 800, "nboot_mratio": 250}:
@@ -658,6 +842,11 @@ def validate_analysis_artifacts(
     expected_bayesian_order = ["human", *sorted(FORMAL_MODEL_LABELS, key=_model_sort_key)]
     if bayesian.get("draws") != 800 or bayesian.get("chains") != 2 or bayesian.get("seed") != RANDOM_SEED or bayesian.get("groups") != expected_bayesian_order or len(group_names) != 7:
         raise ValueError("manifest Bayesian settings/groups are incomplete")
+    report_text = (output / "analysis_report_zh.md").read_text(encoding="utf-8")
+    report_section = re.search(r"(?ms)^## Bayesian 状态\n.*?(?=^## |\Z)", report_text)
+    report_models = re.findall(r"^- `([^`]+)`：", report_section.group(0) if report_section else "", flags=re.MULTILINE)
+    if report_models != expected_bayesian_order:
+        raise ValueError("Bayesian report rows are not in canonical model order")
     group_records: dict[str, dict[str, object]] = {}
     for group_path in sorted((output / "hmetad" / "groups").glob("*.json")):
         record = json.loads(group_path.read_text(encoding="utf-8"))
@@ -695,6 +884,8 @@ def validate_analysis_artifacts(
             if not record_has_field:
                 if status == "complete":
                     raise ValueError(f"Bayesian group is missing {field}: {model}")
+                if field in {"n_wrong", "error_count"}:
+                    raise ValueError(f"Bayesian group is missing source-bound {field}: {model}")
                 if not pd.isna(summary_value):
                     raise ValueError(f"Bayesian {field} unexpectedly present in summary for {model}")
                 continue
@@ -703,6 +894,12 @@ def validate_analysis_artifacts(
             record_int = _strict_json_int(record_value, f"{model}.{field}")
             if pd.isna(summary_value) or _strict_csv_int(summary_value, f"summary {model}.{field}") != record_int:
                 raise ValueError(f"Bayesian {field} mismatch for {model}")
+            if field in {"n_wrong", "error_count"} and record_int != source_wrong[model]:
+                raise ValueError(f"Bayesian {field} disagrees with current input errors for {model}")
+        if "evidence_tier" not in record:
+            raise ValueError(f"Bayesian group is missing source-bound evidence_tier: {model}")
+        if str(record["evidence_tier"]) != evidence_tier(source_wrong[model]):
+            raise ValueError(f"Bayesian evidence_tier disagrees with current input errors for {model}")
         if status == "failed":
             if not str(record.get("error_type", "")).strip() or not str(record.get("error_message", "")).strip():
                 raise ValueError(f"failed Bayesian group lacks error details: {model}")
@@ -1018,7 +1215,18 @@ def _plot_artifacts(
                     if np.isfinite(lo) and np.isfinite(hi):
                         ece_errors[:, idx] = [max(0.0, ece_values[idx] - lo), max(0.0, hi - ece_values[idx])]
         axes[1].bar(x, ece_values, yerr=ece_errors if len(ece_values) else None, capsize=3, color="#f9844a")
-        axes[1].set_ylim(0, 1); axes[1].set_ylabel("ECE"); axes[1].set_xticks(x, labels, rotation=45, ha="right")
+        # ECE is an absolute calibration error on a small scale, whereas
+        # accuracy spans the full 0-1 range.  Sharing one axis crushes every
+        # ECE bar into the bottom tenth of the panel and makes the
+        # human-versus-model difference unreadable, so the ECE panel gets its
+        # own limit, scaled to the data with headroom for the interval caps.
+        ece_top = 0.1
+        if len(ece_values):
+            finite_hi = np.where(np.isfinite(ece_values), ece_values, np.nan) + ece_errors[1]
+            finite_hi = finite_hi[np.isfinite(finite_hi)]
+            if len(finite_hi):
+                ece_top = max(0.1, float(finite_hi.max()) * 1.15)
+        axes[1].set_ylim(0, ece_top); axes[1].set_ylabel("ECE"); axes[1].set_xticks(x, labels, rotation=45, ha="right")
         fig.suptitle(title)
 
     accuracy_ece(model_summary, "Model accuracy and calibration")
@@ -1059,7 +1267,12 @@ def _plot_artifacts(
     ax.set_ylim(bottom=0); ax.set_ylabel("M-ratio"); ax.set_title("M-ratio by evidence tier")
     ax.set_xticks(mratio_frame["x"], mratio_frame["model"], rotation=45, ha="right")
     if len(mratio_frame):
-        ax.legend()
+        # Bootstrap intervals are computed only for the data-driven tier, so
+        # the legend states which tiers carry an interval instead of drawing
+        # an interval glyph for a point that has none.
+        handles, labels = ax.get_legend_handles_labels()
+        ax.legend(handles, [f"{name} (interval)" if name == "data-driven" else f"{name} (point only)"
+                            for name in labels], fontsize="small", loc="upper left")
     save("mratio_evidence.png")
 
     fig, ax = plt.subplots(figsize=(8, 5))
@@ -1082,6 +1295,97 @@ def _plot_artifacts(
         ax.legend()
     save("hallucination_breakdown.png")
     return paths
+
+
+def plot_bayes_mratio_vs_errors(
+    bayes: pd.DataFrame,
+    output_path: Path,
+    *,
+    human_label: str = "human",
+    title: str = "Bayesian M-ratio against error count",
+) -> Path:
+    """Plot Bayesian M-ratio for every group against its error count.
+
+    A figure that shows only the data-driven groups hides how the remaining
+    groups behave and why they were excluded.  This view places every group on
+    one axis so the instability at low error counts is visible rather than
+    asserted: filled markers with intervals are groups that satisfied the
+    prespecified Bayesian diagnostics, and open markers are groups whose fits
+    were prior-dominated or divergent and therefore carry no interval.
+    """
+    import matplotlib
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+
+    required = {"model", "n_wrong", "mr_mean", "hdi_lo", "hdi_hi"}
+    missing = sorted(required - set(bayes.columns))
+    if missing:
+        raise ValueError(f"bayes frame is missing columns: {missing}")
+    frame = bayes.copy()
+    for column in ("n_wrong", "mr_mean", "hdi_lo", "hdi_hi"):
+        frame[column] = pd.to_numeric(frame[column], errors="coerce")
+    if "reliable" in frame.columns:
+        frame["reliable"] = frame["reliable"].astype(str).str.lower().isin({"true", "1", "1.0"})
+    else:
+        frame["reliable"] = False
+    frame = frame.loc[frame["mr_mean"].notna()].sort_values(
+        ["n_wrong", "model"], ascending=[True, True]
+    ).reset_index(drop=True)
+    if frame.empty:
+        raise ValueError("no groups with a finite Bayesian M-ratio to plot")
+
+    human = frame.loc[frame["model"].astype(str).eq(human_label)]
+    rest = frame.loc[~frame["model"].astype(str).eq(human_label)].reset_index(drop=True)
+
+    fig, ax = plt.subplots(figsize=(11, 5))
+    # Visual reference: the human estimate and the lower edge of its interval.
+    if len(human):
+        human_row = human.iloc[0]
+        human_band = float(human_row["hdi_lo"])
+        ax.axhline(float(human_row["mr_mean"]), color="#c1121f", linewidth=1.1,
+                   linestyle="-", label=f"{human_label} M-ratio")
+        ax.axhline(human_band, color="#c1121f", linewidth=1.0, linestyle=":",
+                   label=f"{human_label} 95% HDI lower bound")
+    ax.axhline(1.0, color="0.5", linewidth=0.9, linestyle="--", label="M-ratio = 1")
+
+    x = np.arange(len(rest), dtype=float)
+    ok = rest["reliable"].to_numpy()
+    for mask, label, filled in ((ok, "Bayesian diagnostics passed", True),
+                                (~ok, "prior-dominated or divergent", False)):
+        if not mask.any():
+            continue
+        rows = rest.loc[mask]
+        means = rows["mr_mean"].to_numpy(dtype=float)
+        lower = np.clip(means - rows["hdi_lo"].to_numpy(dtype=float), 0, None)
+        upper = np.clip(rows["hdi_hi"].to_numpy(dtype=float) - means, 0, None)
+        lower = np.where(np.isfinite(lower), lower, 0.0)
+        upper = np.where(np.isfinite(upper), upper, 0.0)
+        if filled:
+            ax.errorbar(x[mask], means, yerr=np.vstack([lower, upper]), fmt="o",
+                        color="#2a9d8f", ecolor="#2a9d8f", capsize=3, markersize=6, label=label)
+        else:
+            # Hollow grey markers: the interval is not interpreted for these groups.
+            ax.errorbar(x[mask], means, yerr=np.vstack([lower, upper]), fmt="o",
+                        mfc="white", mec="0.45", color="0.45", ecolor="0.75",
+                        capsize=3, markersize=6, label=label)
+
+    # Put the error count in the tick label itself: the whole point of the
+    # figure is that position on the x-axis encodes how much evidence each
+    # group contributes.
+    tick_labels = [
+        f"{row.model}\n({int(row.n_wrong)} errors)" for row in rest.itertuples(index=False)
+    ]
+    ax.set_xticks(x, tick_labels, rotation=45, ha="right")
+    ax.set_ylabel("Bayesian M-ratio")
+    ax.set_title(title)
+    ax.set_xlabel("Groups ordered by number of error trials (fewest first)")
+    ax.legend(fontsize="small", loc="lower right")
+    fig.tight_layout()
+    output_path = Path(output_path)
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    fig.savefig(output_path, dpi=140)
+    plt.close(fig)
+    return output_path
 
 
 def run_analysis(
