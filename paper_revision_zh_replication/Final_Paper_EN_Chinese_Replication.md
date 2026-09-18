@@ -3,6 +3,7 @@
 *Project SOCRATES — Self-knowledge Of Confidence: Rating And Testing Epistemic Sensitivity*
 
 Lu Xin  
+Beijing National Day School  
 Mentor: Dr. ZeYu Zhang
 
 ## Abstract
@@ -67,7 +68,7 @@ The Chinese-prompted cohort comprised Gemma 4 E2B Q4_K_M, Gemma 4 E4B Q4_K_M, Ge
 
 Of 9,600 Chinese-prompted model attempts, 9,597 produced valid answer-and-confidence records. Two Gemma 4 26B-A4B QAT outputs and one Qwen3 4B Q4_K_M output were truncated or otherwise nonresponsive. They were retained in quality auditing but excluded from metric denominators. The human responses were collected once and serve as the common comparison group for both model cohorts; they are not two independent human samples.
 
-Collection timing and model availability bear on how these results can be reproduced. The hosted endpoints for the English-prompted cohort were queried in June 2026. Several of them have since been retired or restricted, and a provider alias need not resolve to the same weights even when the name still responds. Exact *generative* reproduction is therefore not guaranteed for those configurations; what the retained logs support is *analytic* reproduction, in which the reported analyses are rerun on the stored outputs and metadata. This limitation does not weaken the case for replication with newer or additional models, because the item bank is already saturated for systems of this capability. Further configurations would still produce too few errors to identify confidence sensitivity, so what this instrument needs is harder items rather than newer respondents.
+The hosted endpoints for the English-prompted cohort were queried in June 2026. Several have since been retired or restricted, and a provider alias need not resolve to the same weights even when the name still responds. Exact *generative* reproduction is therefore not guaranteed for those configurations; the retained logs support *analytic* reproduction, in which the reported analyses are rerun on the stored outputs. This does not weaken the case for replication with newer models, because the item bank is already saturated for systems of this capability: further configurations would still produce too few errors to identify confidence sensitivity, so what this instrument needs is harder items rather than newer respondents.
 
 To keep the cohorts distinct, Chinese-prompted configurations are written in full (for example, *Gemma 4 E2B Q4_K_M*) and tagged **(CN)** in Table 1, while English-prompted ones use their short local identifiers (`local-gemma-e2b`, `local-qwen3-1.7b`). Because the same six checkpoints appear in both cohorts, a bare "Gemma E2B" would be ambiguous; every mention resolves to one cohort.
 
@@ -87,7 +88,7 @@ Interpretation was gated by observed errors: data-driven groups had at least 30 
 
 ### Scope of Inference
 
-The two model cohorts share an item-bank structure and confidence scale, but they differ in prompt language, available models, serving systems, quantization, and generation conditions. The Chinese-prompted cohort removes the direct prompt-language mismatch when compared with the Chinese-speaking human cohort for its six configurations. It does not isolate the effect of language, generalize automatically to all 19 English-prompted configurations, or permit a parameter-size trend because family, active parameters, and quantization are confounded. Because of these differences the cohorts are reported separately and never pooled.
+The two model cohorts share an item-bank structure and confidence scale, but they differ in prompt language, available models, serving systems, quantization, and generation conditions. The Chinese-prompted cohort removes the direct prompt-language mismatch when compared with the Chinese-speaking human cohort for its six configurations. It does not isolate the effect of language, generalize automatically to all 19 English-prompted configurations, or permit a parameter-size trend because family, active parameters, and quantization are confounded. The cohorts are therefore reported separately and never pooled.
 
 All human–model contrasts are group-level. Humans answered item subsets, whereas models answered the full bank repeatedly; participant-clustered and item-clustered resampling reflect those different sampling structures. No formal human-minus-model test was computed for each Chinese configuration. Accordingly, Chinese-cohort comparisons are described as observed point estimates and intervals, not causal or population-wide significance claims.
 
@@ -136,7 +137,7 @@ The English-prompted cohort illustrates why accuracy and ECE alone are insuffici
 
 The Chinese-prompted data-driven MLE estimates were .152 for Gemma 4 E2B Q4_K_M, .259 for Gemma 4 E4B Q4_K_M, .344 for Qwen3 1.7B Q8_0, and .458 for Qwen3 4B Q4_K_M. Each point estimate was below both one and the human point estimate. Their clustered-bootstrap intervals were wide, especially for Gemma 4 E2B Q4_K_M (−.189 to .418) and Gemma 4 E4B Q4_K_M (−.206 to .536). These negative lower endpoints are resampling or fitting artifacts, not meaningful negative metacognitive efficiency. The appropriate conclusion is descriptive: under the fitted model, the human estimate exceeded every data-driven Chinese-model point estimate, while no data-driven model point estimate exceeded one.
 
-Because the HMeta-d posterior regularizes sparse-error groups instead of discarding them, an estimate exists for all 19 English-prompted configurations, and all 19 fall below the lower bound of the human interval (Figure 4). This is a wider comparison than the MLE threshold admits: nine configurations have at least 10 errors, and their estimates run from .620 (deepseek-v4-flash-nothink, 10 errors) to .941 (gpt-5.4-mini, 15 errors), the highest still below the human estimate. Figure 4 also shows why the threshold is not mere bookkeeping: below roughly 10 errors the estimates drift toward 1 as the posterior reverts to its prior, so the apparent convergence of near-ceiling models on M-ratio ≈ 1 reflects absent evidence rather than measured similarity. The human estimate was 1.337, 95% HDI [1.147, 1.519]. Three Chinese-prompted configurations passed the diagnostic rule: Gemma 4 E2B Q4_K_M, .367 [.187, .544]; Qwen3 1.7B Q8_0, .405 [.245, .544]; and Qwen3 4B Q4_K_M, .539 [.409, .654]. Gemma 4 E4B Q4_K_M had adequate errors but a 6.0% divergence rate. Qwen3 14B Q4_K_M was regularized and had a 17.1% divergence rate, while Gemma 4 26B-A4B QAT had five errors and was prior-dominated. Their posterior point estimates are displayed in Table 1 for completeness but do not establish a substantive ranking.
+Because the HMeta-d posterior regularizes sparse-error groups instead of discarding them, an estimate exists for all 19 English-prompted configurations, and all 19 fall below the lower bound of the human interval (Figure 4). This is a wider comparison than the MLE threshold admits: nine configurations have at least 10 errors, and their estimates run from .372 (`local-qwen3-1.7b`, 117 errors) to .941 (gpt-5.4-mini, 15 errors), the highest still below the human estimate. The ordering is worth noting, because it runs opposite to the direction the ceiling would predict: the lowest estimates come from the configurations with the most errors, not the fewest. Figure 4 also shows why the threshold is not mere bookkeeping: below roughly 10 errors the estimates drift toward 1 as the posterior reverts to its prior, so the apparent convergence of near-ceiling models on M-ratio ≈ 1 reflects absent evidence rather than measured similarity. The human estimate was 1.337, 95% HDI [1.147, 1.519]. Three Chinese-prompted configurations passed the diagnostic rule: Gemma 4 E2B Q4_K_M, .367 [.187, .544]; Qwen3 1.7B Q8_0, .405 [.245, .544]; and Qwen3 4B Q4_K_M, .539 [.409, .654]. Gemma 4 E4B Q4_K_M had adequate errors but a 6.0% divergence rate. Qwen3 14B Q4_K_M was regularized and had a 17.1% divergence rate, while Gemma 4 26B-A4B QAT had five errors and was prior-dominated. Their posterior point estimates are displayed in Table 1 for completeness but do not establish a substantive ranking.
 
 **Figure 2**
 
@@ -174,7 +175,7 @@ Type-2 AUC clarifies why low ECE cannot be equated with good uncertainty resolut
 
 ### Behavioral Hypotheses
 
-The results permit only task-specific hypothesis adjudication. The strongest version of H1—that verbalized confidence is entirely unrelated to correctness—is not supported. Human Type-2 AUC was above chance, and several model groups with sufficient errors showed nonzero confidence sensitivity. This does not imply that model confidence is independent of learned verbal style or that it reflects an internal monitor.
+The results permit only task-specific adjudication. The strongest version of H1—that verbalized confidence is unrelated to correctness—is not supported. Human Type-2 AUC was above chance, and several model groups with sufficient errors showed nonzero confidence sensitivity. This does not imply that model confidence is independent of learned verbal style or that it reflects an internal monitor.
 
 H2—that model reports would show near-human confidence behavior on this instrument—is not supported within the data-driven range. The measurable English- and Chinese-prompted model M-ratios were below the pooled human estimate, while the strongest configurations could not be assessed reliably because of the ceiling. H3 predicted a model-specific collapse on hallucination-triggering items. That pattern was not observed: both model cohorts showed positive answer-level discrimination, whereas the pooled human group showed a strong True-response bias on fictional entities. This is a finding about this item bank and response format, not a reversal of hallucination research in general.
 
@@ -223,3 +224,38 @@ Steyvers, M., Tejeda, H., Kumar, A., Belem, C., Karny, S., Hu, X., Mayer, L., & 
 Turpin, M., Michael, J., Perez, E., & Bowman, S. R. (2023). Language models don’t always say what they think: Unfaithful explanations in chain-of-thought prompting. In A. Oh, T. Naumann, A. Globerson, K. Saenko, M. Hardt, & S. Levine (Eds.), *Advances in Neural Information Processing Systems* (Vol. 36, pp. 74952–74965). Curran Associates.
 
 Yin, Z., Sun, Q., Guo, Q., Wu, J., Qiu, X., & Huang, X. (2023). Do large language models know what they don’t know? In *Findings of the Association for Computational Linguistics: ACL 2023* (pp. 8653–8665). Association for Computational Linguistics. https://doi.org/10.18653/v1/2023.findings-acl.551
+
+## Appendix A
+
+### Group-Level Estimates for the English-Prompted Cohort
+
+The main text reports the four data-driven English-prompted configurations in detail and summarises the Bayesian comparison. This appendix records every group-level estimate so that the evidence tier of each configuration, and the reason a given estimate is or is not interpreted, can be checked directly.
+
+*Table A1*
+
+*First-Order Sensitivity, MLE meta-d′, MLE M-ratio, and Bayesian M-ratio for All 20 Groups, Ordered by Number of Error Trials*
+
+| Group | Err. | d′ | meta-d′ | MLE M-ratio [95% CI] | Bayesian M-ratio [95% HDI] | Tier |
+|---|---:|---:|---:|---|---|---|
+| Human cohort | 437 | 1.34 | 1.83 | 1.37 [1.21, 1.54] | 1.33 [1.16, 1.52] | Data-driven |
+| local-qwen3-1.7b | 117 | 2.87 | 0.89 | 0.31 [0.15, 0.50] | 0.37 [0.26, 0.52] † | Data-driven |
+| local-gemma-e2b | 106 | 3.04 | 1.14 | 0.38 [0.21, 0.53] | 0.42 [0.31, 0.54] † | Data-driven |
+| local-gemma-e4b | 45 | 3.88 | 2.68 | 0.69 [0.40, 0.92] | 0.79 [0.64, 0.92] | Data-driven |
+| local-qwen3-4b | 35 | 3.97 | 2.31 | 0.58 [0.40, 0.85] | 0.67 [0.54, 0.80] | Data-driven |
+| local-qwen3-14b | 26 | 4.23 | 2.29 | — | 0.67 [0.54, 0.79] | Regularized |
+| qwen-turbo | 23 | 4.30 | 1.70 | — | 0.76 [0.61, 0.91] † | Regularized |
+| gpt-4o-mini | 20 | 4.48 | 3.33 | — | 0.84 [0.70, 0.96] | Regularized |
+| gpt-5.4-mini | 15 | 4.60 | 3.64 | — | 0.94 [0.79, 1.07] † | Regularized |
+| deepseek-v4-flash-nothink | 10 | 5.21 | 1.59 | — | 0.62 [0.47, 0.76] | Regularized |
+| deepseek-v4-flash | 9 | 4.94 | 2.69 | — | 0.75 [0.61, 0.91] † | Prior-dom. |
+| deepseek-v4-pro-nothink | 9 | 4.95 | 2.01 | — | 0.77 [0.64, 0.94] † | Prior-dom. |
+| deepseek-v4-pro | 8 | 5.00 | 3.62 | — | 0.89 [0.72, 1.03] † | Prior-dom. |
+| gpt-4o | 6 | 5.24 | 5.06 | — | 0.97 [0.84, 1.11] † | Prior-dom. |
+| qwen3.7-plus-nothink | 5 | 5.30 | 3.80 | — | 1.00 [0.85, 1.17] † | Prior-dom. |
+| qwen3.7-max-nothink | 4 | 5.51 | 2.28 | — | 0.89 [0.73, 1.04] † | Prior-dom. |
+| gpt-5.5 | 1 | 5.83 | 5.77 | — | 1.07 [0.92, 1.25] † | Prior-dom. |
+| local-gemma-26b-a4b-qat | 1 | 5.81 | 5.18 | — | 1.02 [0.89, 1.19] † | Prior-dom. |
+| qwen3.7-plus | 1 | 5.83 | 5.63 | — | 1.02 [0.87, 1.19] † | Prior-dom. |
+| qwen3.7-max | 0 | 6.04 | 5.99 | — | 1.07 [0.93, 1.23] † | Prior-dom. |
+
+*Note.* Groups are listed from most to fewest error trials. Err. = error trials; d′ = first-order sensitivity; meta-d′ = meta-d-prime; MLE = maximum-likelihood estimate; CI = item-clustered bootstrap interval (participant-clustered for the human cohort); HDI = highest-density interval; Tier = evidence tier (data-driven ≥30 errors, regularized 10–29, prior-dominated <10). An em dash indicates that no bootstrap interval was computed because the MLE threshold was not met; the regularized and prior-dominated point estimates are dominated by the estimator rather than by the data and are reported only for transparency. A dagger (†) marks Bayesian fits that did not satisfy the prespecified diagnostics (at least 10 errors, R-hat < 1.05, divergence rate < 5%, finite HDI bounds); their intervals are shown but not interpreted. The human row reports the pooled estimate and anchors both model cohorts.
