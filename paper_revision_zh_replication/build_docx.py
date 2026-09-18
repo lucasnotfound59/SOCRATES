@@ -196,6 +196,7 @@ def build() -> Path:
     # 1. Front matter: title, byline, abstract, keywords.
     title = re.search(r"(?m)^# (.+)$", md).group(1).strip()
     byline = re.search(r"(?m)^Lu Xin\s*\n(?:Mentor:.*)$", md).group(0)
+    project = re.search(r"(?m)^\*(Project SOCRATES[^\n]*)\*$", md).group(1).strip()
     abstract = re.search(r"(?ms)^## Abstract\n\n(.*?)\n\n\*Keywords", md).group(1).strip()
     keywords = re.search(r"(?m)^\*Keywords:\*\s*(.+)$", md).group(1).strip()
 
@@ -208,8 +209,13 @@ def build() -> Path:
     body_no_floats = re.sub(r"(?ms)^\*\*(?:Table|Figure) \d+\*\*.*?(?=\n\n\*\*Figure|\n\n### |\n\n## |\Z)", "", body)
 
     display = "\n\n".join([
+        # APA 7 front matter: a title page, then an abstract page, then the
+        # body beginning on a fresh page.  Page breaks are inserted between
+        # these blocks by the paragraph pass below.
         f"# {title}",
         byline,
+        f"*{project}*",
+        "",                                    # spacer so the break can attach
         "## Abstract",
         abstract,
         f"*Keywords:* {keywords}",
@@ -245,11 +251,15 @@ def build() -> Path:
 
         if paragraph.style and style_name.startswith("Heading"):
             level = int(style_name.split()[-1]) if style_name.split()[-1].isdigit() else 1
+            first_line = raw.split("\n")[0].strip()
             if raw.lower().startswith("references"):
                 in_references = True
+            # APA 7 front matter: abstract page, then the body on a fresh page.
+            if first_line == "Abstract" or first_line == "Related Work":
+                paragraph.paragraph_format.page_break_before = True
             paragraph.paragraph_format.line_spacing_rule = WD_LINE_SPACING.MULTIPLE
             # APA 7 double-spaces the title page; body headings use 1.5.
-            is_title = raw.split("\n")[0].strip() == title
+            is_title = first_line == title
             paragraph.paragraph_format.line_spacing = 2.0 if is_title else LINE_SPACING
             paragraph.paragraph_format.first_line_indent = Inches(0)
             paragraph.paragraph_format.space_before = Pt(12 if level > 1 else 0)
