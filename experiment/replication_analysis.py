@@ -2,7 +2,7 @@
 
 from pathlib import Path
 import re
-from typing import Sequence
+from typing import Callable, Sequence
 
 import numpy as np
 import pandas as pd
@@ -189,6 +189,142 @@ def evidence_tier(n_wrong: int) -> str:
     if n_wrong >= 10:
         return "regularized"
     return "prior-dominated"
+
+
+def fit_metad(group: pd.DataFrame) -> dict[str, float | int | str | bool]:
+    """Fit MLE meta-d-prime for one cleaned group.
+
+    The error/evidence metadata is returned even when ``metadpy`` cannot fit
+    the contingency table.  This is important for ceiling groups: a failed
+    estimate is still an observed group, not a missing row.
+    """
+    n = int(len(group))
+    correct = group["correct"].astype(int)
+    n_wrong = int((correct == 0).sum())
+    out: dict[str, float | int | str | bool] = {
+        "dprime": float("nan"), "meta_d": float("nan"),
+        "m_ratio": float("nan"), "m_diff": float("nan"),
+        "n": n, "n_wrong": n_wrong,
+        "evidence_tier": evidence_tier(n_wrong), "fit_status": "not_run",
+    }
+    try:
+        # Keep this conversion identical to the registered metadpy contract.
+        metad_input = pd.DataFrame({
+            "Stimuli": (group["gold"] == "True").astype(int),
+            "Accuracy": group["correct"].astype(int),
+            "Confidence": group["conf"].astype(int),
+        })
+        from metadpy.mle import metad
+        result = metad(data=metad_input, nRatings=5, stimuli="Stimuli",
+                       accuracy="Accuracy", confidence="Confidence")
+        row = result.iloc[0] if hasattr(result, "iloc") else result
+        for key in ("dprime", "meta_d", "m_ratio", "m_diff"):
+            out[key] = float(row[key])
+        out["fit_status"] = "ok"
+    except Exception as exc:  # fitting failures must not drop the group
+        out["fit_status"] = f"{type(exc).__name__}: {exc}"
+    return out
+
+
+def _cluster_draw(group: pd.DataFrame, cluster_ids: np.ndarray,
+                  rng: np.random.Generator) -> pd.DataFrame:
+    """Draw as many clusters as observed, retaining every row per cluster."""
+    sampled = rng.choice(cluster_ids, size=len(cluster_ids), replace=True)
+    pieces = [group.loc[group["cluster_id"].eq(cluster)] for cluster in sampled]
+    return pd.concat(pieces, ignore_index=True) if pieces else group.iloc[0:0].copy()
+
+
+def _percentile(values: list[float], q: float) -> float:
+    finite = np.asarray(values, dtype=float)
+    finite = finite[np.isfinite(finite)]
+    return float(np.percentile(finite, q)) if len(finite) else float("nan")
+
+
+def cluster_bootstrap(group: pd.DataFrame, nboot_metrics: int = 800,
+                      nboot_mratio: int = 250, seed: int = RANDOM_SEED,
+                      fit_fn: Callable = fit_metad) -> dict[str, float | int | str]:
+    """Compute point metrics and deterministic whole-cluster percentile CIs."""
+    if "cluster_id" not in group.columns:
+        raise ValueError("cluster_bootstrap requires cluster_id")
+    if nboot_metrics < 0 or nboot_mratio < 0:
+        raise ValueError("bootstrap counts must be non-negative")
+    clusters = group["cluster_id"].dropna().unique()
+    if not len(clusters):
+        raise ValueError("cluster_bootstrap requires at least one cluster")
+    rng = np.random.default_rng(seed)
+    point_fit = fit_fn(group)
+    n_wrong = int((group["correct"].astype(bool) == 0).sum())
+    tier = evidence_tier(n_wrong)
+    accuracy = float(group["correct"].astype(bool).mean()) if len(group) else float("nan")
+    overconfidence = (_mean(group, "stated") - accuracy)
+    result: dict[str, float | int | str] = {
+        "n": int(len(group)), "n_wrong": n_wrong,
+        "accuracy": accuracy, "ece": ece(group),
+        "overconfidence": overconfidence, "type2_auroc": type2_auroc(group),
+        "dprime": point_fit.get("dprime", float("nan")),
+        "meta_d": point_fit.get("meta_d", float("nan")),
+        "m_ratio": point_fit.get("m_ratio", float("nan")),
+        "m_diff": point_fit.get("m_diff", float("nan")),
+        "evidence_tier": tier, "fit_status": point_fit.get("fit_status", "unknown"),
+    }
+    metric_values = {key: [] for key in ("accuracy", "ece", "overconfidence", "type2_auroc")}
+    for _ in range(nboot_metrics):
+        sample = _cluster_draw(group, clusters, rng)
+        acc = float(sample["correct"].astype(bool).mean())
+        metric_values["accuracy"].append(acc)
+        metric_values["ece"].append(ece(sample))
+        metric_values["overconfidence"].append(_mean(sample, "stated") - acc)
+        metric_values["type2_auroc"].append(type2_auroc(sample))
+    for key, values in metric_values.items():
+        result[f"{key}_lo"] = _percentile(values, 2.5)
+        result[f"{key}_hi"] = _percentile(values, 97.5)
+
+    if tier != "data-driven":
+        result["mratio_boot_status"] = "skipped_insufficient_errors"
+        result["m_ratio_lo"] = result["m_ratio_hi"] = float("nan")
+    else:
+        m_values = []
+        for _ in range(nboot_mratio):
+            draw_fit = fit_fn(_cluster_draw(group, clusters, rng))
+            value = draw_fit.get("m_ratio", float("nan"))
+            try:
+                m_values.append(float(value))
+            except (TypeError, ValueError):
+                m_values.append(float("nan"))
+        result["m_ratio_lo"] = _percentile(m_values, 2.5)
+        result["m_ratio_hi"] = _percentile(m_values, 97.5)
+        result["mratio_boot_status"] = "ok" if np.isfinite(result["m_ratio_lo"]) else "insufficient_finite_fits"
+    # Short aliases match the historical analysis tables.
+    result["acc"] = result["accuracy"]
+    result["acc_lo"] = result["accuracy_lo"]
+    result["acc_hi"] = result["accuracy_hi"]
+    result["overconf"] = result["overconfidence"]
+    result["overconf_lo"] = result["overconfidence_lo"]
+    result["overconf_hi"] = result["overconfidence_hi"]
+    result["auroc2"] = result["type2_auroc"]
+    result["auroc2_lo"] = result["type2_auroc_lo"]
+    result["auroc2_hi"] = result["type2_auroc_hi"]
+    result["m_lo"] = result["m_ratio_lo"]
+    result["m_hi"] = result["m_ratio_hi"]
+    return result
+
+
+def bootstrap_all(data: pd.DataFrame, nboot_metrics: int = 800,
+                  nboot_mratio: int = 250, seed: int = RANDOM_SEED,
+                  fit_fn: Callable = fit_metad) -> pd.DataFrame:
+    """Run clustered bootstrap per model, retaining the established order."""
+    rows = []
+    for model in _ordered_models(data):
+        group = data.loc[data["model"].astype(str).eq(model)].copy()
+        row = cluster_bootstrap(group, nboot_metrics=nboot_metrics,
+                                nboot_mratio=nboot_mratio, seed=seed,
+                                fit_fn=fit_fn)
+        row["model"] = model
+        rows.append(row)
+    if not rows:
+        return pd.DataFrame()
+    columns = ["model"] + [c for c in rows[0] if c != "model"]
+    return pd.DataFrame(rows).reindex(columns=columns)
 
 
 def _text(frame: pd.DataFrame, column: str) -> pd.Series:

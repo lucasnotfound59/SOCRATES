@@ -13,6 +13,9 @@ from experiment.replication_analysis import (
     summarize_groups,
     type2_auroc,
     validate_model_attempts,
+    fit_metad,
+    cluster_bootstrap,
+    bootstrap_all,
 )
 
 
@@ -160,3 +163,51 @@ class ReplicationMetricTests(unittest.TestCase):
         self.assertEqual(evidence_tier(30), "data-driven")
         self.assertEqual(evidence_tier(10), "regularized")
         self.assertEqual(evidence_tier(9), "prior-dominated")
+
+
+def make_clustered_group(cluster_sizes=(4, 4, 4)):
+    rows = []
+    for cluster, size in enumerate(cluster_sizes):
+        for trial in range(size):
+            rows.append({"cluster_id": f"c{cluster}", "gold": "True",
+                         "correct": trial % 2 == 0, "conf": (trial % 5) + 1,
+                         "stated": ((trial % 5) + 1) / 5})
+    return pd.DataFrame(rows)
+
+
+def make_metad_group(n_wrong=29):
+    n = 100
+    correct = [False] * n_wrong + [True] * (n - n_wrong)
+    return pd.DataFrame({"gold": ["True"] * n, "correct": correct,
+                         "conf": [1] * n_wrong + [5] * (n - n_wrong),
+                         "stated": [0.5] * n_wrong + [1.0] * (n - n_wrong),
+                         "cluster_id": [f"c{i // 4}" for i in range(n)]})
+
+
+class ReplicationBootstrapTests(unittest.TestCase):
+    def test_bootstrap_resamples_whole_clusters(self):
+        group = make_clustered_group()
+        observed = []
+
+        def fake_fit(sample):
+            observed.append(sample.groupby("cluster_id").size().tolist())
+            return {"m_ratio": 0.75}
+
+        cluster_bootstrap(group, nboot_metrics=4, nboot_mratio=4,
+                          seed=20260918, fit_fn=fake_fit)
+        self.assertTrue(observed)
+        self.assertTrue(all(all(size % 4 == 0 for size in draw) for draw in observed))
+
+    def test_fit_result_carries_error_count_and_evidence_tier(self):
+        result = fit_metad(make_metad_group(n_wrong=29))
+        self.assertEqual(result["n_wrong"], 29)
+        self.assertEqual(result["evidence_tier"], "regularized")
+        self.assertTrue(result["fit_status"])
+
+    def test_bootstrap_is_deterministic_and_keeps_model_order(self):
+        data = pd.concat([make_metad_group(30).assign(model="b"),
+                          make_metad_group(30).assign(model="a")], ignore_index=True)
+        first = bootstrap_all(data, nboot_metrics=4, nboot_mratio=2, seed=7)
+        second = bootstrap_all(data, nboot_metrics=4, nboot_mratio=2, seed=7)
+        pd.testing.assert_frame_equal(first, second)
+        self.assertEqual(first["model"].tolist(), ["a", "b"])
