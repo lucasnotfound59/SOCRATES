@@ -351,6 +351,36 @@ class ReplicationArtifactTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "reliable must be a boolean"):
             validate_analysis_artifacts(target, model_path, human_path)
 
+    def test_audit_rejects_json_numeric_string_m_ratio(self):
+        target, model_path, human_path = self._copy_formal_audit_fixture()
+        group_path = target / "hmetad/groups/human.json"
+        record = json.loads(group_path.read_text(encoding="utf-8"))
+        record["m_ratio_mean"] = str(record["m_ratio_mean"])
+        group_path.write_text(json.dumps(record), encoding="utf-8")
+        self._refresh_fixture_manifest(target)
+        with self.assertRaisesRegex(ValueError, "m_ratio_mean must be a finite number"):
+            validate_analysis_artifacts(target, model_path, human_path)
+
+    def test_audit_rejects_json_numeric_string_rhat(self):
+        target, model_path, human_path = self._copy_formal_audit_fixture()
+        group_path = target / "hmetad/groups/human.json"
+        record = json.loads(group_path.read_text(encoding="utf-8"))
+        record["rhat"] = str(record["rhat"])
+        group_path.write_text(json.dumps(record), encoding="utf-8")
+        self._refresh_fixture_manifest(target)
+        with self.assertRaisesRegex(ValueError, "rhat must be a finite number"):
+            validate_analysis_artifacts(target, model_path, human_path)
+
+    def test_audit_rejects_json_boolean_string_reliable(self):
+        target, model_path, human_path = self._copy_formal_audit_fixture()
+        group_path = target / "hmetad/groups/human.json"
+        record = json.loads(group_path.read_text(encoding="utf-8"))
+        record["reliable"] = "True"
+        group_path.write_text(json.dumps(record), encoding="utf-8")
+        self._refresh_fixture_manifest(target)
+        with self.assertRaisesRegex(ValueError, "reliable must be a boolean"):
+            validate_analysis_artifacts(target, model_path, human_path)
+
     def test_audit_rejects_failed_record_with_stale_summary_diagnostics(self):
         target, model_path, human_path = self._copy_formal_audit_fixture()
         group_path = target / "hmetad/groups/human.json"

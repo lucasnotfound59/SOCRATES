@@ -512,8 +512,15 @@ def _package_versions() -> dict[str, str]:
     return versions
 
 
-def _strict_bool(value: object, label: str) -> bool:
-    """Accept only JSON booleans or pandas' exact True/False values."""
+def _strict_json_bool(value: object, label: str) -> bool:
+    """Accept only a native JSON boolean from a group record."""
+    if type(value) is bool:
+        return value
+    raise ValueError(f"{label} must be a boolean")
+
+
+def _strict_csv_bool(value: object, label: str) -> bool:
+    """Accept pandas boolean scalars or exact CSV True/False values."""
     if isinstance(value, (bool, np.bool_)):
         return bool(value)
     if isinstance(value, str) and value in {"True", "False"}:
@@ -527,13 +534,21 @@ def _strict_int(value: object, label: str) -> int:
     return int(value)
 
 
-def _strict_finite(value: object, label: str) -> float:
-    if isinstance(value, bool) or value is None:
+def _strict_json_number(value: object, label: str) -> float:
+    """Accept only native JSON int/float values, excluding booleans."""
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
         raise ValueError(f"{label} must be a finite number")
-    try:
-        numeric = float(value)
-    except (TypeError, ValueError):
-        raise ValueError(f"{label} must be a finite number") from None
+    numeric = float(value)
+    if not np.isfinite(numeric):
+        raise ValueError(f"{label} must be a finite number")
+    return numeric
+
+
+def _strict_csv_number(value: object, label: str) -> float:
+    """Accept finite pandas/numpy numeric scalars parsed from CSV."""
+    if isinstance(value, (bool, np.bool_)) or not isinstance(value, (int, float, np.integer, np.floating)):
+        raise ValueError(f"{label} must be a finite number")
+    numeric = float(value)
     if not np.isfinite(numeric):
         raise ValueError(f"{label} must be a finite number")
     return numeric
@@ -687,24 +702,24 @@ def validate_analysis_artifacts(
                         raise ValueError(f"Bayesian {field} unexpectedly present in summary for {model}")
                     continue
                 if field == "reliable":
-                    if _strict_bool(record_value, f"{model}.{field}") != _strict_bool(summary_value, f"summary {model}.{field}"):
+                    if _strict_json_bool(record_value, f"{model}.{field}") != _strict_csv_bool(summary_value, f"summary {model}.{field}"):
                         raise ValueError(f"Bayesian {field} mismatch for {model}")
                 elif field == "evidence_tier":
                     if str(summary_value) != str(record_value):
                         raise ValueError(f"Bayesian {field} mismatch for {model}")
-                elif not np.isclose(_strict_finite(record_value, f"{model}.{field}"), _strict_finite(summary_value, f"summary {model}.{field}")):
+                elif not np.isclose(_strict_json_number(record_value, f"{model}.{field}"), _strict_csv_number(summary_value, f"summary {model}.{field}")):
                     raise ValueError(f"Bayesian {field} mismatch for {model}")
             continue
         for field in diagnostic_fields:
             if field not in record or field not in hmetad.columns:
                 raise ValueError(f"Bayesian group is missing {field}: {model}")
             if field == "reliable":
-                if _strict_bool(record[field], f"{model}.{field}") != _strict_bool(row[field], f"summary {model}.{field}"):
+                if _strict_json_bool(record[field], f"{model}.{field}") != _strict_csv_bool(row[field], f"summary {model}.{field}"):
                     raise ValueError(f"Bayesian {field} mismatch for {model}")
             elif field == "evidence_tier":
                 if not str(record[field]).strip() or str(row[field]).strip() != str(record[field]):
                     raise ValueError(f"Bayesian {field} mismatch for {model}")
-            elif not np.isclose(_strict_finite(record[field], f"{model}.{field}"), _strict_finite(row[field], f"summary {model}.{field}")):
+            elif not np.isclose(_strict_json_number(record[field], f"{model}.{field}"), _strict_csv_number(row[field], f"summary {model}.{field}")):
                 raise ValueError(f"Bayesian {field} mismatch for {model}")
     versions = manifest.get("package_versions", {})
     if any(versions.get(name) in (None, "not-installed") for name in ("pymc", "arviz", "pytensor", "metadpy")):
