@@ -12,6 +12,7 @@ from experiment.replication_hmetad import (
     pending_models,
     run_group,
     summarize_idata,
+    update_report_bayesian,
     write_group_json,
 )
 
@@ -62,12 +63,60 @@ class HMetaSummaryTests(unittest.TestCase):
         self.assertEqual(calls[0]["num_chains"], 2)
         self.assertEqual(calls[0]["random_seed"], 7)
 
+    def test_model_builder_adapter_passes_seed_to_actual_sampling_callable(self):
+        builder_calls = []
+        sample_calls = []
+
+        def fake_builder(**kwargs):
+            builder_calls.append(kwargs)
+            return object()
+
+        def fake_sampling(**kwargs):
+            sample_calls.append(kwargs)
+            return make_fake_idata()
+
+        result = run_group(
+            make_group(), draws=12, chains=2, seed=41,
+            sampler=fake_builder, sampling_call=fake_sampling,
+        )
+        self.assertEqual(result["status"], "complete")
+        self.assertFalse(builder_calls[0]["sample_model"])
+        self.assertEqual(sample_calls[0]["random_seed"], 41)
+        self.assertEqual(sample_calls[0]["draws"], 12)
+
+    def test_ratio_rhat_can_fail_when_meta_d_rhat_would_pass(self):
+        rng = np.random.default_rng(3)
+        meta_d = rng.normal(1.0, 0.02, size=(4, 100))
+        d1 = np.asarray([1.0, 1.5, 0.8, 1.2])[:, None] * np.ones((4, 100))
+        idata = az.from_dict(
+            posterior={"meta_d": meta_d, "d1": d1},
+            sample_stats={"diverging": np.zeros((4, 100), dtype=bool)},
+        )
+        result = summarize_idata(idata, n_wrong=30)
+        self.assertGreater(result["rhat"], 1.05)
+        self.assertFalse(result["reliable"])
+
+    def test_preprocessing_failure_is_returned_as_failed_result(self):
+        result = run_group(pd.DataFrame({"model": ["broken"]}), 12, 2, 7,
+                           sampler=lambda **kwargs: self.fail("sampler must not run"))
+        self.assertEqual(result["status"], "failed")
+        self.assertEqual(result["error_type"], "ValueError")
+        self.assertIn("correct", result["error_message"])
+
     def test_completed_group_is_reused_on_resume(self):
         with tempfile.TemporaryDirectory() as temp:
             group_dir = Path(temp)
             write_group_json(group_dir, model="human", status="complete")
             pending = pending_models(["human", "model-a"], group_dir)
             self.assertEqual(pending, ["model-a"])
+
+    def test_resume_requeues_complete_group_when_settings_change(self):
+        with tempfile.TemporaryDirectory() as temp:
+            group_dir = Path(temp)
+            write_group_json(group_dir, model="human", status="complete",
+                             draws_requested=800, chains_requested=2, seed=1)
+            self.assertEqual(pending_models(["human"], group_dir,
+                                            draws=900, chains=2, seed=1), ["human"])
 
 
 class HMetaArtifactTests(unittest.TestCase):
@@ -92,6 +141,17 @@ class HMetaArtifactTests(unittest.TestCase):
             write_group_json(Path(temp), model="human", status="failed", value=2)
             self.assertEqual(json.loads(path.read_text())["status"], "failed")
             self.assertEqual(list(Path(temp).glob("*.tmp")), [])
+
+    def test_report_update_preserves_surrounding_sections(self):
+        with tempfile.TemporaryDirectory() as temp:
+            report = Path(temp) / "analysis_report_zh.md"
+            report.write_text("# Report\n\n## Before\nkeep\n\n## Bayesian 状态\n\npending\n\n## After\nkeep-after\n", encoding="utf-8")
+            frame = pd.DataFrame([{"model": "human", "status": "missing"}])
+            update_report_bayesian(report, frame)
+            text = report.read_text(encoding="utf-8")
+            self.assertIn("## Before\nkeep", text)
+            self.assertIn("## After\nkeep-after", text)
+            self.assertIn("`human`：`missing`", text)
 
 
 if __name__ == "__main__":

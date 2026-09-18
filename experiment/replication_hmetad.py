@@ -34,20 +34,21 @@ GROUP_DIRNAME = "hmetad/groups"
 SUMMARY_NAME = "hmetad_summary.csv"
 
 
-def _posterior_values(idata: az.InferenceData, name: str) -> np.ndarray:
-    posterior = idata.posterior
-    if name not in posterior:
-        raise KeyError(f"posterior is missing {name!r}")
-    values = np.asarray(posterior[name].values, dtype=float)
-    return values.reshape(-1)
-
-
 def _rhat(idata: az.InferenceData, variable: str) -> float:
     try:
         diagnostic = az.rhat(idata, var_names=[variable])
         values = np.asarray(diagnostic[variable].values, dtype=float).reshape(-1)
         finite = values[np.isfinite(values)]
         return float(np.max(finite)) if len(finite) else float("nan")
+    except Exception:
+        return float("nan")
+
+
+def _ratio_rhat(ratio: np.ndarray) -> float:
+    """Compute R-hat on the chain/draw-preserving M-ratio samples."""
+    try:
+        ratio_idata = az.from_dict(posterior={"m_ratio": ratio})
+        return _rhat(ratio_idata, "m_ratio")
     except Exception:
         return float("nan")
 
@@ -70,13 +71,13 @@ def summarize_idata(idata: az.InferenceData, n_wrong: int = 0) -> dict[str, floa
     sample before its mean, interval, and diagnostics are reported.
     """
     denominator = "d1" if "d1" in idata.posterior else "d"
-    meta_d = _posterior_values(idata, "meta_d")
-    d_value = _posterior_values(idata, denominator)
-    if len(meta_d) != len(d_value):
+    meta_d_array = np.asarray(idata.posterior["meta_d"].values, dtype=float)
+    d_array = np.asarray(idata.posterior[denominator].values, dtype=float)
+    if meta_d_array.shape != d_array.shape:
         raise ValueError("posterior meta_d and d/d1 have different sample counts")
     with np.errstate(divide="ignore", invalid="ignore"):
-        ratio = meta_d / d_value
-    finite = ratio[np.isfinite(ratio)]
+        ratio_array = meta_d_array / d_array
+    finite = ratio_array[np.isfinite(ratio_array)]
     if len(finite):
         mean = float(np.mean(finite))
         median = float(np.median(finite))
@@ -90,7 +91,7 @@ def summarize_idata(idata: az.InferenceData, n_wrong: int = 0) -> dict[str, floa
     posterior = idata.posterior
     chains = int(posterior.sizes.get("chain", 0))
     draws = int(posterior.sizes.get("draw", 0))
-    rhat = _rhat(idata, "meta_d")
+    rhat = _ratio_rhat(ratio_array)
     wrong = int(n_wrong)
     reliable = bool(
         wrong >= 10
@@ -167,6 +168,7 @@ def run_group(
     chains: int,
     seed: int,
     sampler: Callable = hmetad,
+    sampling_call: Callable | None = None,
 ) -> dict[str, object]:
     """Run one group and return a JSON-ready result record.
 
@@ -176,34 +178,49 @@ def run_group(
     """
     if draws <= 0 or chains <= 0:
         raise ValueError("draws and chains must be positive")
-    model = _group_model(group)
-    wrong = _n_wrong(group)
     started = time.perf_counter()
+    try:
+        model = _group_model(group)
+    except Exception:
+        model = "unknown"
     base: dict[str, object] = {
         "model": model,
         "status": "failed",
         "n": int(len(group)),
-        "n_wrong": wrong,
-        "error_count": wrong,
-        "evidence_tier": evidence_tier(wrong),
+        "n_wrong": None,
+        "error_count": None,
+        "evidence_tier": None,
         "draws_requested": int(draws),
         "chains_requested": int(chains),
         "seed": int(seed),
     }
     try:
+        wrong = _n_wrong(group)
+        base.update({"n_wrong": wrong, "error_count": wrong, "evidence_tier": evidence_tier(wrong)})
         if sampler is None:
             raise ImportError("metadpy.bayesian.hmetad is unavailable")
-        sampled = sampler(
-            data=_sampler_frame(group),
-            nRatings=5,
-            stimuli="Stimuli",
-            accuracy="Accuracy",
-            confidence="Confidence",
-            num_samples=int(draws),
-            num_chains=int(chains),
-            random_seed=int(seed),
-            output="model",
-        )
+        sampler_kwargs = {
+            "data": _sampler_frame(group), "nRatings": 5,
+            "stimuli": "Stimuli", "accuracy": "Accuracy", "confidence": "Confidence",
+            "num_samples": int(draws), "num_chains": int(chains), "output": "model",
+        }
+        if sampling_call is not None or sampler is hmetad:
+            # metadpy currently accepts **kwargs but drops them when it calls
+            # its internal PyMC sampler. Build the model without sampling,
+            # then pass the seed directly to the actual sampling callable.
+            built = sampler(**sampler_kwargs, sample_model=False)
+            model_object = built[0] if isinstance(built, (tuple, list)) else built
+            if sampling_call is None:
+                import pymc as pm
+                sampling_call = pm.sample
+            sampled = sampling_call(
+                model=model_object, draws=int(draws), chains=int(chains),
+                random_seed=int(seed), return_inferencedata=True,
+            )
+        else:
+            # Injected test samplers may already return an InferenceData. Keep
+            # this path as the small public adapter seam.
+            sampled = sampler(**sampler_kwargs, random_seed=int(seed))
         idata = sampled[1] if isinstance(sampled, (tuple, list)) else sampled
         diagnostics = summarize_idata(idata, n_wrong=wrong)
         base.update(diagnostics)
@@ -297,12 +314,20 @@ def _read_group_json(group_dir: Path, model: str) -> dict[str, Any] | None:
     return value
 
 
-def pending_models(models: Sequence[str], group_dir: Path) -> list[str]:
-    """Return models whose result is absent or not marked complete."""
+def pending_models(
+    models: Sequence[str], group_dir: Path, *, draws: int | None = None,
+    chains: int | None = None, seed: int | None = None,
+) -> list[str]:
+    """Return models absent, failed, or complete under different run settings."""
     pending = []
     for model in models:
         result = _read_group_json(Path(group_dir), str(model))
-        if result is None or result.get("status") != "complete":
+        reusable = result is not None and result.get("status") == "complete"
+        requested = {"draws_requested": draws, "chains_requested": chains, "seed": seed}
+        for key, expected in requested.items():
+            if expected is not None and (result is None or result.get(key) != expected):
+                reusable = False
+        if not reusable:
             pending.append(str(model))
     return pending
 
@@ -432,7 +457,9 @@ def main(argv: Sequence[str] | None = None) -> int:
         if unknown:
             raise SystemExit(f"unknown model(s): {', '.join(unknown)}")
         if args.resume:
-            selected = [model for model in selected if model in pending_models(selected, group_dir)]
+            selected = [model for model in selected if model in pending_models(
+                selected, group_dir, draws=args.draws, chains=args.chains, seed=args.seed
+            )]
         by_model = {model: data.loc[data["model"].astype(str).eq(model)].copy() for model in models}
         for model in selected:
             result = run_group(by_model[model], args.draws, args.chains, args.seed)
