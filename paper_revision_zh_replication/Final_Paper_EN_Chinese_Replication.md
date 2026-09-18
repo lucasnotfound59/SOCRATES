@@ -110,17 +110,17 @@ For the Chinese-prompted cohort, the unweighted mean ECE was .053, compared with
 **Table 1**  
 *Chinese-Prompted Model Cohort: Accuracy, Calibration, and M-ratio Evidence*
 
-| Group | Valid *n* | Accuracy | ECE | Errors | MLE M-ratio | Evidence tier | Bayesian M-ratio [95% HDI] | Bayesian status |
+| Group | *n* | Acc. | ECE | Err. | MLE M-ratio | Tier | Bayes. M-ratio [95% HDI] | Diagnostics |
 |---|---:|---:|---:|---:|---:|---|---|---|
 | Human cohort | 1,647 | .735 | .086 | 437 | 1.370 | Data-driven | 1.337 [1.147, 1.519] | Passed |
 | Gemma 4 E2B Q4_K_M (CN) | 1,600 | .943 | .070 | 92 | .152 | Data-driven | .367 [.187, .544] | Passed |
-| Gemma 4 E4B Q4_K_M (CN) | 1,600 | .941 | .051 | 94 | .259 | Data-driven | .399 [.241, .550] | Divergence criterion failed |
-| Gemma 4 26B-A4B QAT (CN) | 1,598 | .997 | .008 | 5 | .920 | Prior-dominated | 1.079 [.900, 1.244] | Prior-dominated |
+| Gemma 4 E4B Q4_K_M (CN) | 1,600 | .941 | .051 | 94 | .259 | Data-driven | .399 [.241, .550] | Failed: divergence |
+| Gemma 4 26B-A4B QAT (CN) | 1,598 | .997 | .008 | 5 | .920 | Prior-dom. | 1.079 [.900, 1.244] | Prior-dom. |
 | Qwen3 1.7B Q8_0 (CN) | 1,600 | .893 | .101 | 171 | .344 | Data-driven | .405 [.245, .544] | Passed |
 | Qwen3 4B Q4_K_M (CN) | 1,599 | .966 | .043 | 55 | .458 | Data-driven | .539 [.409, .654] | Passed |
-| Qwen3 14B Q4_K_M (CN) | 1,600 | .986 | .043 | 23 | .527 | Regularized | .650 [.519, .782] | Divergence criterion failed |
+| Qwen3 14B Q4_K_M (CN) | 1,600 | .986 | .043 | 23 | .527 | Regularized | .650 [.519, .782] | Failed: divergence |
 
-*Note.* ECE = Expected Calibration Error; MLE = maximum-likelihood estimate; HDI = highest-density interval; M-ratio = meta-d′/d′; Q4_K_M = a mixed 4-bit K-quantization variant; Q8_0 = an 8-bit quantization variant; QAT = quantization-aware training. Evidence tiers are based on error counts: data-driven ≥30, regularized 10–29, prior-dominated <10. Only Bayesian rows marked Passed satisfy the prespecified diagnostic rule; other rows are reported for transparency but not interpreted.
+*Note.* *n* = valid trials; Acc. = accuracy; Err. = error trials; ECE = Expected Calibration Error; MLE = maximum-likelihood estimate; HDI = highest-density interval; Tier = evidence tier; M-ratio = meta-d′/d′; Q4_K_M = a mixed 4-bit K-quantization variant; Q8_0 = an 8-bit quantization variant; QAT = quantization-aware training. Evidence tiers are based on error counts: data-driven ≥30, regularized 10–29, prior-dominated <10. Only Bayesian rows marked Passed satisfy the prespecified diagnostic rule; other rows are reported for transparency but not interpreted.
 
 **Figure 1**
 
