@@ -218,8 +218,10 @@ def fit_metad(group: pd.DataFrame) -> dict[str, float | int | str | bool]:
         result = metad(data=metad_input, nRatings=5, stimuli="Stimuli",
                        accuracy="Accuracy", confidence="Confidence")
         row = result.iloc[0] if hasattr(result, "iloc") else result
-        for key in ("dprime", "meta_d", "m_ratio", "m_diff"):
-            out[key] = float(row[key])
+        # Convert all values before mutating the output so a partial/bad
+        # metadpy result cannot leave a misleading partially successful fit.
+        fitted = {key: float(row[key]) for key in ("dprime", "meta_d", "m_ratio", "m_diff")}
+        out.update(fitted)
         out["fit_status"] = "ok"
     except Exception as exc:  # fitting failures must not drop the group
         out["fit_status"] = f"{type(exc).__name__}: {exc}"

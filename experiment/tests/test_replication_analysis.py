@@ -1,6 +1,7 @@
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 import pandas as pd
 
@@ -70,6 +71,7 @@ class ReplicationInputTests(unittest.TestCase):
         self.assertEqual(len(all_rows), 9600)
         self.assertEqual(len(valid), 9599)
         self.assertNotIn(all_rows.iloc[0].name, valid.index)
+        self.assertTrue((valid["cluster_id"] == valid["item_id"]).all())
 
     def test_validation_rejects_duplicate_formal_key(self):
         attempts = make_model_attempts()
@@ -186,7 +188,7 @@ def make_metad_group(n_wrong=29):
 
 class ReplicationBootstrapTests(unittest.TestCase):
     def test_bootstrap_resamples_whole_clusters(self):
-        group = make_clustered_group()
+        group = make_clustered_group((40, 40, 40))
         observed = []
 
         def fake_fit(sample):
@@ -195,14 +197,24 @@ class ReplicationBootstrapTests(unittest.TestCase):
 
         cluster_bootstrap(group, nboot_metrics=4, nboot_mratio=4,
                           seed=20260918, fit_fn=fake_fit)
-        self.assertTrue(observed)
-        self.assertTrue(all(all(size % 4 == 0 for size in draw) for draw in observed))
+        self.assertEqual(len(observed), 5)  # point fit + four bootstrap fits
+        self.assertTrue(all(all(size % 40 == 0 for size in draw) for draw in observed[1:]))
 
     def test_fit_result_carries_error_count_and_evidence_tier(self):
         result = fit_metad(make_metad_group(n_wrong=29))
         self.assertEqual(result["n_wrong"], 29)
         self.assertEqual(result["evidence_tier"], "regularized")
         self.assertTrue(result["fit_status"])
+
+    def test_failed_partial_metad_result_keeps_all_estimates_nan(self):
+        group = make_metad_group(n_wrong=29)
+        bad_result = pd.DataFrame({"dprime": [1.0], "meta_d": [2.0],
+                                   "m_ratio": [3.0]})
+        with patch("metadpy.mle.metad", return_value=bad_result):
+            result = fit_metad(group)
+        self.assertTrue(all(pd.isna(result[key]) for key in
+                            ("dprime", "meta_d", "m_ratio", "m_diff")))
+        self.assertIn("KeyError", result["fit_status"])
 
     def test_bootstrap_is_deterministic_and_keeps_model_order(self):
         data = pd.concat([make_metad_group(30).assign(model="b"),
