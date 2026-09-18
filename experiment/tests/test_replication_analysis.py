@@ -6,8 +6,11 @@ import pandas as pd
 
 from experiment.replication_analysis import (
     data_quality_table,
+    ece,
+    evidence_tier,
     load_human_trials,
     load_model_attempts,
+    type2_auroc,
     validate_model_attempts,
 )
 
@@ -125,3 +128,18 @@ class ReplicationInputTests(unittest.TestCase):
         self.addCleanup(path.unlink)
         clean = load_human_trials(path)
         self.assertEqual(len(clean), 0)
+
+
+class ReplicationMetricTests(unittest.TestCase):
+    def test_ece_uses_binary_task_confidence_mapping(self):
+        group = pd.DataFrame({"conf": [1, 1, 5, 5], "correct": [True, False, True, False]})
+        self.assertAlmostEqual(ece(group), 0.25)
+
+    def test_type2_auroc_rewards_higher_confidence_on_correct_trials(self):
+        group = pd.DataFrame({"conf": [5, 4, 2, 1], "correct": [True, True, False, False]})
+        self.assertAlmostEqual(type2_auroc(group), 1.0)
+
+    def test_evidence_tiers_match_registered_thresholds(self):
+        self.assertEqual(evidence_tier(30), "data-driven")
+        self.assertEqual(evidence_tier(10), "regularized")
+        self.assertEqual(evidence_tier(9), "prior-dominated")
