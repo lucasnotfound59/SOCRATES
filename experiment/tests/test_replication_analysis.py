@@ -21,6 +21,8 @@ from experiment.replication_analysis import (
     bootstrap_all,
     _mratio_plot_data,
     _ranked_models,
+    _strict_csv_bool,
+    _strict_csv_number,
     _validate_formal_model_labels,
     _validate_manifest_input_digests,
     validate_analysis_artifacts,
@@ -74,6 +76,12 @@ def write_csv(frame):
 
 
 class ReplicationInputTests(unittest.TestCase):
+    def test_csv_summary_helpers_reject_coercive_strings(self):
+        with self.assertRaisesRegex(ValueError, "finite number"):
+            _strict_csv_number("1.337", "summary.m_ratio_mean")
+        with self.assertRaisesRegex(ValueError, "boolean"):
+            _strict_csv_bool("True", "summary.reliable")
+
     def test_formal_model_label_contract_rejects_substitution(self):
         labels = [
             "repl-gemma4-e2b-q4km", "repl-gemma4-e4b-q4km",
@@ -385,8 +393,9 @@ class ReplicationArtifactTests(unittest.TestCase):
         target, model_path, human_path = self._copy_formal_audit_fixture()
         group_path = target / "hmetad/groups/human.json"
         record = json.loads(group_path.read_text(encoding="utf-8"))
-        record.update({"status": "failed", "n_wrong": None,
-                       "error_type": "TestFailure", "error_message": "synthetic"})
+        record.update({"status": "failed", "error_type": "TestFailure", "error_message": "synthetic"})
+        for field in ("n_wrong", "error_count", "evidence_tier"):
+            record.pop(field, None)
         for field in ("m_ratio_mean", "m_ratio_median", "m_ratio_sd", "mr_mean", "mr_median",
                       "post_sd", "hdi_lo", "hdi_hi", "hdi_width", "rhat", "n_divergent",
                       "divergence_rate", "reliable", "evidence_tier"):
@@ -394,14 +403,35 @@ class ReplicationArtifactTests(unittest.TestCase):
         group_path.write_text(json.dumps(record), encoding="utf-8")
         summary_path = target / "hmetad_summary.csv"
         summary = pd.read_csv(summary_path)
-        for column in ("status", "n_wrong", "error_type", "error_message"):
+        for column in ("status", "n_wrong", "error_count", "evidence_tier", "error_type", "error_message"):
             summary[column] = summary[column].astype(object)
-        summary.loc[summary["model"].eq("human"), ["status", "n_wrong", "error_type", "error_message"]] = [
-            "failed", pd.NA, "TestFailure", "synthetic"
+        summary.loc[summary["model"].eq("human"), ["status", "n_wrong", "error_count", "evidence_tier", "error_type", "error_message"]] = [
+            "failed", pd.NA, pd.NA, pd.NA, "TestFailure", "synthetic"
         ]
         summary.to_csv(summary_path, index=False)
         self._refresh_fixture_manifest(target)
         with self.assertRaisesRegex(ValueError, "unexpectedly present in summary"):
+            validate_analysis_artifacts(target, model_path, human_path)
+
+    def test_audit_rejects_explicit_null_failed_diagnostic(self):
+        target, model_path, human_path = self._copy_formal_audit_fixture()
+        group_path = target / "hmetad/groups/human.json"
+        record = json.loads(group_path.read_text(encoding="utf-8"))
+        record.update({"status": "failed", "error_type": "TestFailure", "error_message": "synthetic"})
+        for field in ("n_wrong", "error_count", "evidence_tier", "draws", "chains"):
+            record.pop(field, None)
+        record["m_ratio_mean"] = None
+        group_path.write_text(json.dumps(record), encoding="utf-8")
+        summary_path = target / "hmetad_summary.csv"
+        summary = pd.read_csv(summary_path)
+        for column in ("status", "n_wrong", "error_count", "evidence_tier", "draws", "chains", "error_type", "error_message", "m_ratio_mean"):
+            summary[column] = summary[column].astype(object)
+        summary.loc[summary["model"].eq("human"), ["status", "n_wrong", "error_count", "evidence_tier", "draws", "chains", "error_type", "error_message", "m_ratio_mean"]] = [
+            "failed", pd.NA, pd.NA, pd.NA, pd.NA, pd.NA, "TestFailure", "synthetic", pd.NA
+        ]
+        summary.to_csv(summary_path, index=False)
+        self._refresh_fixture_manifest(target)
+        with self.assertRaisesRegex(ValueError, "m_ratio_mean is explicitly null"):
             validate_analysis_artifacts(target, model_path, human_path)
 
     def test_audit_rejects_self_consistent_counts_that_disagree_with_source(self):

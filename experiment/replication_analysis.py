@@ -520,11 +520,9 @@ def _strict_json_bool(value: object, label: str) -> bool:
 
 
 def _strict_csv_bool(value: object, label: str) -> bool:
-    """Accept pandas boolean scalars or exact CSV True/False values."""
+    """Accept only pandas/native boolean scalars parsed from CSV."""
     if isinstance(value, (bool, np.bool_)):
         return bool(value)
-    if isinstance(value, str) and value in {"True", "False"}:
-        return value == "True"
     raise ValueError(f"{label} must be a boolean")
 
 
@@ -662,7 +660,7 @@ def validate_analysis_artifacts(
         "model": inputs["model"].get("sha256"),
         "human": inputs["human"].get("sha256"),
     }
-    core_fields = ("n", "n_wrong", "draws", "chains", "seed")
+    core_fields = ("n", "n_wrong", "error_count", "draws", "chains", "seed")
     diagnostic_fields = (
         "m_ratio_mean", "hdi_lo", "hdi_hi", "rhat", "n_divergent", "divergence_rate",
         "reliable", "evidence_tier",
@@ -676,15 +674,20 @@ def validate_analysis_artifacts(
         if record.get("input_digests") != expected_input_digests:
             raise ValueError(f"Bayesian input digest mismatch for {model}")
         for field in core_fields:
-            record_value = record.get(field)
+            record_has_field = field in record
+            record_value = record[field] if record_has_field else None
             summary_value = row[field] if field in hmetad.columns else None
             # Failed preprocessing records legitimately have no posterior
             # draws, chains, or error count; every field they do provide is
             # still checked against the summary rather than ignored.
-            if record_value is None:
+            if not record_has_field:
+                if status == "complete":
+                    raise ValueError(f"Bayesian group is missing {field}: {model}")
                 if not pd.isna(summary_value):
                     raise ValueError(f"Bayesian {field} unexpectedly present in summary for {model}")
                 continue
+            if record_value is None:
+                raise ValueError(f"Bayesian {field} is explicitly null for {model}")
             record_int = _strict_int(record_value, f"{model}.{field}")
             if pd.isna(summary_value) or _strict_int(summary_value, f"summary {model}.{field}") != record_int:
                 raise ValueError(f"Bayesian {field} mismatch for {model}")
@@ -695,12 +698,15 @@ def validate_analysis_artifacts(
                 if str(row[field]) != str(record[field]):
                     raise ValueError(f"Bayesian {field} mismatch for {model}")
             for field in diagnostic_fields:
-                record_value = record.get(field)
+                record_has_field = field in record
+                record_value = record[field] if record_has_field else None
                 summary_value = row[field] if field in hmetad.columns else None
-                if record_value is None:
+                if not record_has_field:
                     if not pd.isna(summary_value):
                         raise ValueError(f"Bayesian {field} unexpectedly present in summary for {model}")
                     continue
+                if record_value is None:
+                    raise ValueError(f"Bayesian {field} is explicitly null for {model}")
                 if field == "reliable":
                     if _strict_json_bool(record_value, f"{model}.{field}") != _strict_csv_bool(summary_value, f"summary {model}.{field}"):
                         raise ValueError(f"Bayesian {field} mismatch for {model}")
