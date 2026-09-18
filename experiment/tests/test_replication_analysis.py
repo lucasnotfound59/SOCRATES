@@ -20,6 +20,7 @@ from experiment.replication_analysis import (
     bootstrap_all,
     _mratio_plot_data,
     _ranked_models,
+    validate_analysis_artifacts,
 )
 
 
@@ -38,7 +39,12 @@ def make_model_attempts(models=6, items=400, samples=4):
                     "type": "常规", "subtype": "基础", "difficulty": "易",
                     "finish_reason": "stop", "error": "",
                 })
-    return pd.DataFrame(rows)
+    frame = pd.DataFrame(rows)
+    # pandas 3 may infer Arrow string columns; tests intentionally mutate
+    # protocol flags to booleans, so keep fixture fields assignment-compatible.
+    for column in ("parse_ok", "parsed_answer", "finish_reason", "error"):
+        frame[column] = frame[column].astype(object)
+    return frame
 
 
 def make_human_master():
@@ -154,6 +160,22 @@ class ReplicationMetricTests(unittest.TestCase):
             "human", "local-gemma-e2b", "local-gemma-e4b",
             "local-gemma-26b-a4b-qat", "local-qwen3-1.7b",
             "local-qwen3-4b", "local-qwen3-14b",
+        ])
+
+    def test_summary_orders_actual_formal_replication_labels(self):
+        labels = [
+            "repl-qwen3-14b-q4km", "repl-gemma4-26b-a4b-qat",
+            "repl-qwen3-4b-q4km", "repl-gemma4-e4b-q4km",
+            "repl-qwen3-1.7b-q8", "repl-gemma4-e2b-q4km",
+        ]
+        data = pd.DataFrame({
+            "model": labels, "conf": [1] * len(labels),
+            "stated": [0.5] * len(labels), "correct": [True] * len(labels),
+        })
+        self.assertEqual(summarize_groups(data)["model"].tolist(), [
+            "repl-gemma4-e2b-q4km", "repl-gemma4-e4b-q4km",
+            "repl-gemma4-26b-a4b-qat", "repl-qwen3-1.7b-q8",
+            "repl-qwen3-4b-q4km", "repl-qwen3-14b-q4km",
         ])
 
     def test_ece_uses_binary_task_confidence_mapping(self):
@@ -334,3 +356,18 @@ class ReplicationArtifactTests(unittest.TestCase):
         forbidden = Path(__file__).resolve().parents[1] / "results" / "analysis"
         with self.assertRaises(ValueError):
             run_analysis(model_path, human_path, forbidden, nboot_metrics=0, nboot_mratio=0)
+
+    def test_validate_only_emits_success_marker_after_gate(self):
+        from experiment.replication_analysis import main
+        with patch(
+            "experiment.replication_analysis.validate_analysis_artifacts",
+            return_value={"model_rows": 9600},
+        ) as audit:
+            with patch("builtins.print") as printer:
+                result = main([
+                    "--validate-only", "--model-results", "model.csv",
+                    "--human-master", "human.csv", "--output-dir", str(self.output_dir),
+                ])
+        self.assertEqual(result, 0)
+        audit.assert_called_once()
+        self.assertEqual(printer.call_args_list[-1].args, ("ANALYSIS_AUDIT_OK",))

@@ -3,6 +3,7 @@ import subprocess
 import sys
 import tempfile
 import unittest
+import platform
 from pathlib import Path
 from unittest.mock import patch
 
@@ -15,11 +16,13 @@ from experiment.replication_analysis import evidence_tier
 from experiment.replication_hmetad import (
     aggregate_results,
     pending_models,
+    refresh_run_manifest,
     run_group,
     summarize_idata,
     update_report_bayesian,
     write_group_json,
 )
+from experiment.pytensor_compat import compatibility_status
 
 
 def make_fake_idata():
@@ -42,6 +45,13 @@ def make_group(model="human", n_wrong=23):
 
 
 class HMetaSummaryTests(unittest.TestCase):
+    def test_pytensor_compatibility_does_not_falsify_platform_identity(self):
+        before = platform.mac_ver()
+        status = compatibility_status()
+        self.assertEqual(platform.mac_ver(), before)
+        self.assertIn("helper_version", status)
+        self.assertIn("activated", status)
+
     def test_direct_script_entrypoint_supports_registered_command(self):
         script = Path(__file__).parents[1] / "replication_hmetad.py"
         result = subprocess.run(
@@ -138,16 +148,16 @@ class HMetaSummaryTests(unittest.TestCase):
         with patch("experiment.replication_hmetad._ratio_rhat", return_value=1.049999):
             self.assertTrue(summarize_idata(make_fake_idata(), 30)["reliable"])
 
-        posterior = {"meta_d": np.ones((2, 20)), "d1": np.ones((2, 20))}
+        posterior = {"meta_d": np.ones((2, 500)), "d1": np.ones((2, 500))}
         exact = az.from_dict(
             posterior=posterior,
-            sample_stats={"diverging": np.array([[True, True] + [False] * 18,
-                                                    [False] * 20])},
+            sample_stats={"diverging": np.array([[True] * 50 + [False] * 450,
+                                                    [False] * 500])},
         )
         below = az.from_dict(
             posterior=posterior,
-            sample_stats={"diverging": np.array([[True] + [False] * 19,
-                                                    [False] * 20])},
+            sample_stats={"diverging": np.array([[True] * 49 + [False] * 451,
+                                                    [False] * 500])},
         )
         with patch("experiment.replication_hmetad._ratio_rhat", return_value=1.0):
             self.assertFalse(summarize_idata(exact, 30)["reliable"])
@@ -170,6 +180,24 @@ class HMetaSummaryTests(unittest.TestCase):
 
 
 class HMetaArtifactTests(unittest.TestCase):
+    def test_refresh_manifest_enumerates_bayesian_outputs_and_hashes(self):
+        with tempfile.TemporaryDirectory() as temp:
+            analysis = Path(temp)
+            (analysis / "hmetad" / "groups").mkdir(parents=True)
+            (analysis / "run_manifest.json").write_text(
+                json.dumps({"random_seed": 20260918}), encoding="utf-8"
+            )
+            (analysis / "hmetad_summary.csv").write_text("model,status\nhuman,complete\n", encoding="utf-8")
+            (analysis / "hmetad" / "groups" / "human.json").write_text(
+                '{"model":"human","status":"complete"}\n', encoding="utf-8"
+            )
+            refresh_run_manifest(analysis, draws=800, chains=2, seed=20260918)
+            manifest = json.loads((analysis / "run_manifest.json").read_text(encoding="utf-8"))
+            self.assertIn("hmetad_summary.csv", manifest["artifacts"])
+            self.assertIn("hmetad/groups/human.json", manifest["artifact_hashes"])
+            self.assertEqual(manifest["bayesian"]["draws"], 800)
+            self.assertIsNone(manifest["artifact_hashes"]["run_manifest.json"])
+
     def test_aggregate_retains_failed_and_missing_groups(self):
         with tempfile.TemporaryDirectory() as temp:
             group_dir = Path(temp) / "groups"

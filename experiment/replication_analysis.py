@@ -64,21 +64,22 @@ def _mean(group: pd.DataFrame, column: str) -> float:
 def _model_sort_key(model: object) -> tuple:
     name = str(model)
     if name == "human":
-        return (0, "", -1, "")
+        return (0, 0, -1.0, "")
     # Formal local replication labels encode the model version and parameter
     # size in the same identifier (e.g. qwen3-14b, gemma-e4b, and
     # gemma-26b-a4b-qat).  Only the first parameter-size token is the size;
     # quantization/active-expert suffixes must not affect ordering.
     base = re.sub(r"-nothink$", "", name)
-    if base.startswith("local-gemma-"):
-        family = "gemma"
-    elif base.startswith("local-qwen3-"):
-        family = "qwen3"
-    else:
-        family = re.sub(r"(?:^|[-_])(?:e)?\d+(?:\.\d+)?b", "-size", base)
     size_match = re.search(r"(?:^|[-_])(?:e)?(\d+(?:\.\d+)?)b(?:[-_]|$)", base)
     numeric = float(size_match.group(1)) if size_match else float("inf")
-    return (1, family, numeric, name)
+    lowered = base.lower()
+    if "gemma" in lowered:
+        family_rank = 0
+    elif "qwen" in lowered:
+        family_rank = 1
+    else:
+        family_rank = 2
+    return (1, family_rank, numeric, name)
 
 
 def _ordered_models(data: pd.DataFrame) -> list[str]:
@@ -498,12 +499,103 @@ def _sha256(path: Path) -> str:
 
 def _package_versions() -> dict[str, str]:
     versions = {}
-    for package in ("numpy", "pandas", "scipy", "matplotlib", "metadpy"):
+    for package in ("numpy", "pandas", "scipy", "matplotlib", "metadpy", "pymc", "arviz", "pytensor"):
         try:
             versions[package] = importlib.metadata.version(package)
         except importlib.metadata.PackageNotFoundError:
             versions[package] = "not-installed"
     return versions
+
+
+_REQUIRED_FORMAL_ARTIFACTS = {
+    "data_quality.csv", "model_summary.csv", "human_model_summary.csv",
+    "by_type.csv", "by_difficulty.csv", "confidence_distribution.csv",
+    "reliability.csv", "hallucination_breakdown.csv", "hallucination_sdt.csv",
+    "metad_summary.csv", "bootstrap_summary.csv", "hmetad_summary.csv",
+    "tables.md", "analysis_report_zh.md", "run_manifest.json",
+}
+_REQUIRED_FIGURES = {
+    "model_accuracy_ece.png", "human_model_accuracy_ece.png",
+    "accuracy_by_type.png", "mratio_evidence.png", "reliability_curves.png",
+    "hallucination_breakdown.png",
+}
+
+
+def validate_analysis_artifacts(
+    output_dir: Path,
+    model_path: Path,
+    human_path: Path,
+) -> dict[str, object]:
+    """Validate the complete formal artifact set and cross-table contracts."""
+    output = _safe_output_dir(Path(output_dir))
+    missing = [name for name in sorted(_REQUIRED_FORMAL_ARTIFACTS) if not (output / name).is_file()]
+    missing.extend(f"figures/{name}" for name in sorted(_REQUIRED_FIGURES) if not (output / "figures" / name).is_file())
+    if missing:
+        raise ValueError(f"missing required artifacts: {', '.join(missing)}")
+    for figure in _REQUIRED_FIGURES:
+        data = (output / "figures" / figure).read_bytes()
+        if not data.startswith(b"\x89PNG\r\n\x1a\n"):
+            raise ValueError(f"invalid PNG artifact: {figure}")
+
+    all_model, valid_model = load_model_attempts(Path(model_path))
+    human = load_human_trials(Path(human_path))
+    quality = pd.read_csv(output / "data_quality.csv")
+    model_summary = pd.read_csv(output / "model_summary.csv")
+    comparison = pd.read_csv(output / "human_model_summary.csv")
+    metad = pd.read_csv(output / "metad_summary.csv")
+    bootstrap = pd.read_csv(output / "bootstrap_summary.csv")
+    hmetad = pd.read_csv(output / "hmetad_summary.csv")
+    if len(all_model) != EXPECTED_TOTAL_ATTEMPTS or len(valid_model) != 9597 or len(human) != 1647:
+        raise ValueError("input row counts do not match formal protocol")
+    if int(quality["n_attempted"].sum()) != EXPECTED_TOTAL_ATTEMPTS or int(quality["n_valid"].sum()) != len(valid_model):
+        raise ValueError("data_quality.csv counts do not match loaded inputs")
+    if len(model_summary) != EXPECTED_MODELS or len(comparison) != 7 or len(metad) != 7 or len(bootstrap) != 7 or len(hmetad) != 7:
+        raise ValueError("formal table row counts do not match protocol")
+    if set(hmetad["status"].astype(str)) != {"complete"}:
+        raise ValueError("not all Bayesian groups are complete")
+    model_names = set(model_summary["model"].astype(str))
+    comparison_names = set(comparison["model"].astype(str))
+    if not model_names.issubset(comparison_names) or set(metad["model"].astype(str)) != comparison_names:
+        raise ValueError("model names disagree across comparison tables")
+    if set(bootstrap["model"].astype(str)) != comparison_names or set(hmetad["model"].astype(str)) != comparison_names:
+        raise ValueError("model names disagree across bootstrap/Bayesian tables")
+    comparison_n = comparison.set_index("model")["n"].astype(int)
+    hmetad_n = hmetad.set_index("model")["n"].astype(int)
+    if not comparison_n.equals(hmetad_n.reindex(comparison_n.index)):
+        raise ValueError("Bayesian group counts disagree with human_model_summary.csv")
+
+    manifest = json.loads((output / "run_manifest.json").read_text(encoding="utf-8"))
+    if manifest.get("random_seed") != RANDOM_SEED or manifest.get("bootstrap") != {"nboot_metrics": 800, "nboot_mratio": 250}:
+        raise ValueError("manifest seed/bootstrap settings do not match formal protocol")
+    inputs = manifest.get("inputs", {})
+    if inputs.get("model", {}).get("valid_row_count") != 9597 or inputs.get("human", {}).get("valid_row_count") != 1647:
+        raise ValueError("manifest input counts do not match formal protocol")
+    bayesian = manifest.get("bayesian", {})
+    group_names = sorted(p.stem for p in (output / "hmetad" / "groups").glob("*.json"))
+    if bayesian.get("draws") != 800 or bayesian.get("chains") != 2 or bayesian.get("seed") != RANDOM_SEED or bayesian.get("groups") != group_names or len(group_names) != 7:
+        raise ValueError("manifest Bayesian settings/groups are incomplete")
+    versions = manifest.get("package_versions", {})
+    if any(versions.get(name) in (None, "not-installed") for name in ("pymc", "arviz", "pytensor", "metadpy")):
+        raise ValueError("manifest is missing Bayesian package versions")
+    compatibility = manifest.get("runtime_compatibility", {})
+    if not compatibility.get("helper_version") or "activated" not in compatibility:
+        raise ValueError("manifest is missing runtime compatibility record")
+    hashes = manifest.get("artifact_hashes", {})
+    artifacts = manifest.get("artifacts", {})
+    actual_files = {p.relative_to(output).as_posix() for p in output.rglob("*") if p.is_file()}
+    if set(artifacts) != actual_files or set(hashes) != actual_files:
+        raise ValueError("manifest does not enumerate every generated artifact")
+    for relative, digest in hashes.items():
+        if relative == "run_manifest.json":
+            if digest is not None:
+                raise ValueError("manifest self-hash must be null")
+        elif digest != _sha256(output / relative):
+            raise ValueError(f"artifact hash mismatch: {relative}")
+    return {
+        "model_rows": len(all_model), "model_valid_rows": len(valid_model),
+        "human_valid_rows": len(human), "model_groups": len(model_summary),
+        "comparison_groups": len(comparison), "bayesian_groups": len(hmetad),
+    }
 
 
 def _write_csv(frame: pd.DataFrame, path: Path) -> Path:
@@ -688,8 +780,9 @@ def _write_report(
         "",
         *tier_lines,
         "",
-        "MLE 点估计和聚类 bootstrap 区间均保留；接近满分的组可能没有稳定的错误结构，"
-        "因此 `regularized` 和 `prior-dominated` 组不会被包装成确定的元认知结论。",
+        "MLE 点估计和聚类 bootstrap 区间均保留；M-ratio bootstrap 区间仅在数据驱动且拟合可估计的组中报告，"
+        "regularized/prior-dominated 组的区间留空；接近满分的组可能没有稳定的错误结构，"
+        "因此这些组不会被包装成确定的元认知结论。",
         "",
         "## Bayesian 状态",
         "",
@@ -778,7 +871,9 @@ def _plot_artifacts(
         ax.bar(np.arange(len(types)) + idx * width, values, width=width, label=model)
     ax.set_xticks(np.arange(len(types)) + width * max(len(models) - 1, 0) / 2, types)
     ax.set_ylim(0, 1); ax.set_ylabel("Accuracy"); ax.set_title("Accuracy by item type")
-    if models: ax.legend(fontsize="small", ncol=2)
+    if models:
+        fig.subplots_adjust(right=0.76)
+        ax.legend(fontsize="small", loc="upper left", bbox_to_anchor=(1.02, 1), borderaxespad=0)
     save("accuracy_by_type.png")
 
     fig, ax = plt.subplots(figsize=(9, 4))
@@ -923,9 +1018,9 @@ def main(argv: Sequence[str] | None = None) -> int:
     args = _build_parser().parse_args(argv)
     _safe_output_dir(args.output_dir)
     if args.validate_only:
-        all_model, valid_model = load_model_attempts(args.model_results)
-        human = load_human_trials(args.human_master)
-        print(json.dumps({"model_rows": len(all_model), "model_valid_rows": len(valid_model), "human_valid_rows": len(human)}, ensure_ascii=False))
+        audit = validate_analysis_artifacts(args.output_dir, args.model_results, args.human_master)
+        print(json.dumps(audit, ensure_ascii=False))
+        print("ANALYSIS_AUDIT_OK")
         return 0
     paths = run_analysis(args.model_results, args.human_master, args.output_dir,
                          nboot_metrics=args.nboot_metrics, nboot_mratio=args.nboot_mratio,

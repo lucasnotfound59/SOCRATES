@@ -22,13 +22,23 @@ import arviz as az
 import numpy as np
 import pandas as pd
 
-try:
+if __package__:
+    from .pytensor_compat import compatibility_status, configure_pytensor_compatibility
     # Package import for ``python -m experiment.replication_hmetad`` and tests.
-    from .replication_analysis import evidence_tier, load_human_trials, load_model_attempts
-except ImportError:  # pragma: no cover - exercised by direct script execution
+    from .replication_analysis import (
+        _package_versions, _sha256, evidence_tier, load_human_trials,
+        load_model_attempts,
+    )
+else:  # pragma: no cover - exercised by direct script execution
+    from pytensor_compat import compatibility_status, configure_pytensor_compatibility
     # The registered formal command invokes this file by path.  In that mode
     # Python puts ``experiment/`` on sys.path and relative imports are invalid.
-    from replication_analysis import evidence_tier, load_human_trials, load_model_attempts
+    from replication_analysis import (
+        _package_versions, _sha256, evidence_tier, load_human_trials,
+        load_model_attempts,
+    )
+
+configure_pytensor_compatibility()
 
 try:  # Keep import errors out of non-sampling utility use.
     from metadpy.bayesian import hmetad
@@ -430,6 +440,40 @@ def update_report_bayesian(path: Path, summary: pd.DataFrame) -> Path:
     return path
 
 
+def refresh_run_manifest(
+    analysis_dir: Path,
+    *,
+    draws: int,
+    chains: int,
+    seed: int,
+) -> Path:
+    """Extend the non-Bayesian manifest with every Bayesian output and hash."""
+    analysis_dir = Path(analysis_dir)
+    manifest_path = analysis_dir / "run_manifest.json"
+    if not manifest_path.exists():
+        raise FileNotFoundError(f"missing non-Bayesian manifest: {manifest_path}")
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    artifacts: dict[str, str] = {}
+    artifact_hashes: dict[str, str | None] = {}
+    for path in sorted(p for p in analysis_dir.rglob("*") if p.is_file()):
+        relative = path.relative_to(analysis_dir).as_posix()
+        artifacts[relative] = str(path.resolve())
+        # The manifest cannot contain its own final hash without becoming
+        # self-referential; all other generated files are content-hashed.
+        artifact_hashes[relative] = None if relative == "run_manifest.json" else _sha256(path)
+    manifest["artifacts"] = artifacts
+    manifest["artifact_paths"] = artifacts
+    manifest["artifact_hashes"] = artifact_hashes
+    manifest["bayesian"] = {
+        "draws": int(draws), "chains": int(chains), "seed": int(seed),
+        "groups": sorted(p.stem for p in (analysis_dir / GROUP_DIRNAME).glob("*.json")),
+    }
+    manifest["runtime_compatibility"] = compatibility_status()
+    manifest["package_versions"] = _package_versions()
+    manifest_path.write_text(json.dumps(manifest, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    return manifest_path
+
+
 def _load_data(args: argparse.Namespace) -> pd.DataFrame:
     if args.data is not None:
         data = pd.read_csv(args.data, low_memory=False)
@@ -495,6 +539,9 @@ def main(argv: Sequence[str] | None = None) -> int:
         group_dir,
         output_path=analysis_dir / SUMMARY_NAME,
         report_path=analysis_dir / "analysis_report_zh.md",
+    )
+    refresh_run_manifest(
+        analysis_dir, draws=args.draws, chains=args.chains, seed=args.seed,
     )
     return 0
 
