@@ -26,7 +26,7 @@ if __package__:
     from .pytensor_compat import compatibility_status, configure_pytensor_compatibility
     # Package import for ``python -m experiment.replication_hmetad`` and tests.
     from .replication_analysis import (
-        _package_versions, _sha256, evidence_tier, load_human_trials,
+        _model_sort_key, _package_versions, _sha256, evidence_tier, load_human_trials,
         load_model_attempts,
     )
 else:  # pragma: no cover - exercised by direct script execution
@@ -34,7 +34,7 @@ else:  # pragma: no cover - exercised by direct script execution
     # The registered formal command invokes this file by path.  In that mode
     # Python puts ``experiment/`` on sys.path and relative imports are invalid.
     from replication_analysis import (
-        _package_versions, _sha256, evidence_tier, load_human_trials,
+        _model_sort_key, _package_versions, _sha256, evidence_tier, load_human_trials,
         load_model_attempts,
     )
 
@@ -185,6 +185,7 @@ def run_group(
     seed: int,
     sampler: Callable = hmetad,
     sampling_call: Callable | None = None,
+    input_digests: Mapping[str, str] | None = None,
 ) -> dict[str, object]:
     """Run one group and return a JSON-ready result record.
 
@@ -212,6 +213,8 @@ def run_group(
         "chains_requested": int(chains),
         "seed": int(seed),
     }
+    if input_digests is not None:
+        base["input_digests"] = dict(input_digests)
     if model_error is not None:
         base.update({
             "error_type": type(model_error).__name__,
@@ -345,6 +348,7 @@ def _read_group_json(group_dir: Path, model: str) -> dict[str, Any] | None:
 def pending_models(
     models: Sequence[str], group_dir: Path, *, draws: int | None = None,
     chains: int | None = None, seed: int | None = None,
+    input_digests: Mapping[str, str] | None = None,
 ) -> list[str]:
     """Return models absent, failed, or complete under different run settings."""
     pending = []
@@ -355,6 +359,10 @@ def pending_models(
         for key, expected in requested.items():
             if expected is not None and (result is None or result.get(key) != expected):
                 reusable = False
+        if input_digests is not None and (result is None or result.get("input_digests") != dict(input_digests)):
+            # Missing digests are deliberately unsafe: an old result is never
+            # reused against an unverified input file.
+            reusable = False
         if not reusable:
             pending.append(str(model))
     return pending
@@ -364,7 +372,7 @@ _SUMMARY_COLUMNS = [
     "model", "status", "n", "n_wrong", "error_count", "evidence_tier",
     "m_ratio_mean", "m_ratio_median", "m_ratio_sd", "mr_mean", "mr_median",
     "post_sd", "hdi_lo", "hdi_hi", "hdi_width", "rhat", "n_divergent",
-    "divergence_rate", "draws", "chains", "reliable", "runtime_s",
+    "divergence_rate", "draws", "chains", "seed", "reliable", "runtime_s",
     "error_type", "error_message",
 ]
 
@@ -378,7 +386,7 @@ def aggregate_results(
 ) -> pd.DataFrame:
     """Combine complete, failed, and missing group records in requested order."""
     rows: list[dict[str, Any]] = []
-    for model in models:
+    for model in sorted((str(model) for model in models), key=_model_sort_key):
         result = _read_group_json(Path(group_dir), str(model))
         if result is None:
             result = {"model": str(model), "status": "missing", "error_type": "MissingGroup"}
@@ -415,7 +423,7 @@ def update_report_bayesian(path: Path, summary: pd.DataFrame) -> Path:
         "",
         f"Bayesian HMeta-d 已处理 {len(complete)} 组；失败 {len(failed)} 组；缺失 {len(missing)} 组。",
         "证据等级仍只由错误数决定：`data-driven`（≥30）、`regularized`（10–29）、`prior-dominated`（<10）。",
-        "可靠性另外要求错误数至少 10、R-hat < 1.05、发散转移比例 < 5%，且 95% HDI 边界有限；不满足时仅透明报告，不作强结论。",
+        "可靠性另外要求错误数至少 10、R-hat < 1.05、发散比例 < 5%，且 95% HDI 边界有限；不满足时仅透明报告，不作强结论。",
     ]
     for row in complete.itertuples(index=False):
         lines.append(
@@ -464,9 +472,13 @@ def refresh_run_manifest(
     manifest["artifacts"] = artifacts
     manifest["artifact_paths"] = artifacts
     manifest["artifact_hashes"] = artifact_hashes
+    expected_order = ["human", *sorted(
+        (p.stem for p in (analysis_dir / GROUP_DIRNAME).glob("*.json") if p.stem != "human"),
+        key=_model_sort_key,
+    )]
     manifest["bayesian"] = {
         "draws": int(draws), "chains": int(chains), "seed": int(seed),
-        "groups": sorted(p.stem for p in (analysis_dir / GROUP_DIRNAME).glob("*.json")),
+        "groups": expected_order,
     }
     manifest["runtime_compatibility"] = compatibility_status()
     manifest["package_versions"] = _package_versions()
@@ -510,25 +522,37 @@ def main(argv: Sequence[str] | None = None) -> int:
         raise SystemExit("choose exactly one of --model, --all, or --aggregate")
     analysis_dir = Path(args.analysis_dir)
     group_dir = analysis_dir / GROUP_DIRNAME
+    input_digests: dict[str, str] = {}
+    if args.model_results is not None and args.human_master is not None:
+        input_digests = {
+            "model": _sha256(Path(args.model_results).expanduser().resolve()),
+            "human": _sha256(Path(args.human_master).expanduser().resolve()),
+        }
+    elif args.data is not None:
+        input_digests = {"data": _sha256(Path(args.data).expanduser().resolve())}
     data = None
     if args.model is not None or args.all:
         data = _load_data(args)
-        models = data["model"].dropna().astype(str).drop_duplicates().tolist()
+        models = sorted(data["model"].dropna().astype(str).drop_duplicates().tolist(), key=_model_sort_key)
         selected = [str(args.model)] if args.model is not None else models
         unknown = [model for model in selected if model not in set(models)]
         if unknown:
             raise SystemExit(f"unknown model(s): {', '.join(unknown)}")
         if args.resume:
             selected = [model for model in selected if model in pending_models(
-                selected, group_dir, draws=args.draws, chains=args.chains, seed=args.seed
+                selected, group_dir, draws=args.draws, chains=args.chains, seed=args.seed,
+                input_digests=input_digests,
             )]
         by_model = {model: data.loc[data["model"].astype(str).eq(model)].copy() for model in models}
         for model in selected:
-            result = run_group(by_model[model], args.draws, args.chains, args.seed)
+            result = run_group(
+                by_model[model], args.draws, args.chains, args.seed,
+                input_digests=input_digests,
+            )
             write_group_json(group_dir, result)
     elif args.data is not None or (args.model_results is not None and args.human_master is not None):
         data = _load_data(args)
-        models = data["model"].dropna().astype(str).drop_duplicates().tolist()
+        models = sorted(data["model"].dropna().astype(str).drop_duplicates().tolist(), key=_model_sort_key)
     else:
         summary_path = analysis_dir / "human_model_summary.csv"
         if not summary_path.exists():

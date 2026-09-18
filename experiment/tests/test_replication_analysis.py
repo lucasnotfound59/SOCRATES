@@ -20,6 +20,8 @@ from experiment.replication_analysis import (
     bootstrap_all,
     _mratio_plot_data,
     _ranked_models,
+    _validate_formal_model_labels,
+    _validate_manifest_input_digests,
     validate_analysis_artifacts,
 )
 
@@ -70,6 +72,28 @@ def write_csv(frame):
 
 
 class ReplicationInputTests(unittest.TestCase):
+    def test_formal_model_label_contract_rejects_substitution(self):
+        labels = [
+            "repl-gemma4-e2b-q4km", "repl-gemma4-e4b-q4km",
+            "repl-gemma4-26b-a4b-qat", "repl-qwen3-1.7b-q8",
+            "repl-qwen3-4b-q4km", "repl-qwen3-14b-q4km",
+        ]
+        self.assertEqual(_validate_formal_model_labels(labels), set(labels))
+        with self.assertRaisesRegex(ValueError, "formal model labels"):
+            _validate_formal_model_labels([*labels[:-1], "repl-qwen3-32b-q4km"])
+
+    def test_manifest_input_digest_contract_rejects_changed_bytes(self):
+        model_path = write_csv(pd.DataFrame({"value": [1]}))
+        human_path = write_csv(pd.DataFrame({"value": [2]}))
+        self.addCleanup(model_path.unlink)
+        self.addCleanup(human_path.unlink)
+        import hashlib
+        digest = lambda path: hashlib.sha256(path.read_bytes()).hexdigest()
+        inputs = {"model": {"sha256": digest(model_path)}, "human": {"sha256": digest(human_path)}}
+        _validate_manifest_input_digests(inputs, model_path, human_path)
+        model_path.write_text("changed\n", encoding="utf-8")
+        with self.assertRaisesRegex(ValueError, "model input sha256"):
+            _validate_manifest_input_digests(inputs, model_path, human_path)
     def test_model_loader_keeps_invalid_attempts_out_of_metrics(self):
         attempts = make_model_attempts()
         attempts.loc[0, "parse_ok"] = False

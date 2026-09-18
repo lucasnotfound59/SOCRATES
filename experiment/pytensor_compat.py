@@ -24,6 +24,12 @@ _STATUS: dict[str, Any] = {
 }
 
 
+def _load_compiler() -> Any:
+    """Load PyTensor's compiler seam separately for controlled testing."""
+    import pytensor.link.c.cmodule as cmodule
+    return cmodule.GCC_compiler
+
+
 def configure_pytensor_compatibility() -> dict[str, Any]:
     """Apply the narrowly scoped linker fix once and return an audit record."""
     if _STATUS["reason"] != "not_configured":
@@ -47,11 +53,10 @@ def configure_pytensor_compatibility() -> dict[str, Any]:
         _STATUS["reason"] = "macos-version-not-affected"
         return dict(_STATUS)
     try:
-        import pytensor.link.c.cmodule as cmodule
+        compiler = _load_compiler()
     except Exception as exc:  # pragma: no cover - incomplete runtime only
         _STATUS["reason"] = f"pytensor-import-failed:{type(exc).__name__}"
         return dict(_STATUS)
-    compiler = cmodule.GCC_compiler
     original = compiler.compile_args
     if getattr(original, "_socrates_ld64_compat", False):
         _STATUS.update(activated=True, reason="already-active")

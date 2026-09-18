@@ -25,6 +25,11 @@ EXPECTED_MODELS = 6
 EXPECTED_ATTEMPTS_PER_MODEL = 1600
 EXPECTED_TOTAL_ATTEMPTS = 9600
 RANDOM_SEED = 20260918
+FORMAL_MODEL_LABELS = frozenset({
+    "repl-gemma4-e2b-q4km", "repl-gemma4-e4b-q4km",
+    "repl-gemma4-26b-a4b-qat", "repl-qwen3-1.7b-q8",
+    "repl-qwen3-4b-q4km", "repl-qwen3-14b-q4km",
+})
 
 _BINARY = {"true", "false"}
 _PUBLIC_COLUMNS = [
@@ -507,6 +512,32 @@ def _package_versions() -> dict[str, str]:
     return versions
 
 
+def _as_bool(value: object) -> bool:
+    if isinstance(value, (bool, np.bool_)):
+        return bool(value)
+    return str(value).strip().lower() in {"true", "1", "1.0"}
+
+
+def _validate_formal_model_labels(labels: Sequence[object]) -> set[str]:
+    """Require exactly the six registered replication model labels."""
+    actual = {str(label) for label in labels}
+    if actual != set(FORMAL_MODEL_LABELS):
+        missing = sorted(FORMAL_MODEL_LABELS - actual)
+        unexpected = sorted(actual - FORMAL_MODEL_LABELS)
+        raise ValueError(f"formal model labels disagree: missing={missing}, unexpected={unexpected}")
+    return actual
+
+
+def _validate_manifest_input_digests(
+    inputs: dict[str, object], model_path: Path, human_path: Path
+) -> None:
+    """Require the current formal input bytes to match the recorded manifest."""
+    for label, path in (("model", Path(model_path)), ("human", Path(human_path))):
+        expected_digest = inputs.get(label, {}).get("sha256") if isinstance(inputs.get(label), dict) else None
+        if not expected_digest or expected_digest != _sha256(path.resolve()):
+            raise ValueError(f"manifest {label} input sha256 does not match current input")
+
+
 _REQUIRED_FORMAL_ARTIFACTS = {
     "data_quality.csv", "model_summary.csv", "human_model_summary.csv",
     "by_type.csv", "by_difficulty.csv", "confidence_distribution.csv",
@@ -551,11 +582,9 @@ def validate_analysis_artifacts(
         raise ValueError("data_quality.csv counts do not match loaded inputs")
     if len(model_summary) != EXPECTED_MODELS or len(comparison) != 7 or len(metad) != 7 or len(bootstrap) != 7 or len(hmetad) != 7:
         raise ValueError("formal table row counts do not match protocol")
-    if set(hmetad["status"].astype(str)) != {"complete"}:
-        raise ValueError("not all Bayesian groups are complete")
-    model_names = set(model_summary["model"].astype(str))
+    model_names = _validate_formal_model_labels(model_summary["model"])
     comparison_names = set(comparison["model"].astype(str))
-    if not model_names.issubset(comparison_names) or set(metad["model"].astype(str)) != comparison_names:
+    if comparison_names != model_names | {"human"} or set(metad["model"].astype(str)) != comparison_names:
         raise ValueError("model names disagree across comparison tables")
     if set(bootstrap["model"].astype(str)) != comparison_names or set(hmetad["model"].astype(str)) != comparison_names:
         raise ValueError("model names disagree across bootstrap/Bayesian tables")
@@ -570,10 +599,55 @@ def validate_analysis_artifacts(
     inputs = manifest.get("inputs", {})
     if inputs.get("model", {}).get("valid_row_count") != 9597 or inputs.get("human", {}).get("valid_row_count") != 1647:
         raise ValueError("manifest input counts do not match formal protocol")
+    _validate_manifest_input_digests(inputs, Path(model_path), Path(human_path))
     bayesian = manifest.get("bayesian", {})
     group_names = sorted(p.stem for p in (output / "hmetad" / "groups").glob("*.json"))
-    if bayesian.get("draws") != 800 or bayesian.get("chains") != 2 or bayesian.get("seed") != RANDOM_SEED or bayesian.get("groups") != group_names or len(group_names) != 7:
+    expected_bayesian_order = ["human", *sorted(FORMAL_MODEL_LABELS, key=_model_sort_key)]
+    if bayesian.get("draws") != 800 or bayesian.get("chains") != 2 or bayesian.get("seed") != RANDOM_SEED or bayesian.get("groups") != expected_bayesian_order or len(group_names) != 7:
         raise ValueError("manifest Bayesian settings/groups are incomplete")
+    group_records: dict[str, dict[str, object]] = {}
+    for group_path in sorted((output / "hmetad" / "groups").glob("*.json")):
+        record = json.loads(group_path.read_text(encoding="utf-8"))
+        model = str(record.get("model", ""))
+        if not model or model in group_records:
+            raise ValueError("Bayesian group JSONs have missing or duplicate model labels")
+        group_records[model] = record
+    if set(group_records) != comparison_names:
+        raise ValueError("Bayesian group JSON order/labels disagree with formal order")
+    hmetad_by_model = hmetad.set_index("model")
+    for model in expected_bayesian_order:
+        record = group_records[model]
+        row = hmetad_by_model.loc[model]
+        status = str(record.get("status", ""))
+        if status not in {"complete", "failed"} or str(row["status"]) != status:
+            raise ValueError(f"Bayesian status mismatch for {model}")
+        if status == "failed":
+            if not str(record.get("error_type", "")).strip() or not str(record.get("error_message", "")).strip():
+                raise ValueError(f"failed Bayesian group lacks error details: {model}")
+            for field in ("error_type", "error_message"):
+                if str(row[field]) != str(record[field]):
+                    raise ValueError(f"Bayesian {field} mismatch for {model}")
+            continue
+        for field in ("n", "n_wrong", "draws", "chains", "seed", "n_divergent", "reliable"):
+            if field not in record or field not in hmetad.columns:
+                raise ValueError(f"Bayesian group is missing {field}: {model}")
+            left = record[field]
+            right = row[field]
+            if field == "reliable":
+                equal = bool(left) == _as_bool(right)
+            else:
+                equal = int(left) == int(right)
+            if not equal:
+                raise ValueError(f"Bayesian {field} mismatch for {model}")
+        for field in ("m_ratio_mean", "hdi_lo", "hdi_hi", "rhat", "divergence_rate"):
+            if not np.isclose(float(record[field]), float(row[field]), equal_nan=True):
+                raise ValueError(f"Bayesian {field} mismatch for {model}")
+        if str(record.get("evidence_tier")) != str(row["evidence_tier"]):
+            raise ValueError(f"Bayesian evidence mismatch for {model}")
+        if not isinstance(record.get("input_digests"), dict):
+            raise ValueError(f"Bayesian input digests missing for {model}")
+        if record["input_digests"].get("model") != inputs["model"].get("sha256") or record["input_digests"].get("human") != inputs["human"].get("sha256"):
+            raise ValueError(f"Bayesian input digest mismatch for {model}")
     versions = manifest.get("package_versions", {})
     if any(versions.get(name) in (None, "not-installed") for name in ("pymc", "arviz", "pytensor", "metadpy")):
         raise ValueError("manifest is missing Bayesian package versions")

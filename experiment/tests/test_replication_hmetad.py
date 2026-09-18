@@ -23,6 +23,7 @@ from experiment.replication_hmetad import (
     write_group_json,
 )
 from experiment.pytensor_compat import compatibility_status
+import experiment.pytensor_compat as pytensor_compat
 
 
 def make_fake_idata():
@@ -51,6 +52,30 @@ class HMetaSummaryTests(unittest.TestCase):
         self.assertEqual(platform.mac_ver(), before)
         self.assertIn("helper_version", status)
         self.assertIn("activated", status)
+
+    def test_pytensor_compatibility_removes_only_ld64_and_is_idempotent(self):
+        class FakeCompiler:
+            @staticmethod
+            def compile_args(march_flags=True):
+                return ["-O2", "-ld64", "-pipe", "-march=native"] if march_flags else ["-O2", "-ld64", "-pipe"]
+
+        initial = {
+            "helper_version": pytensor_compat.COMPATIBILITY_VERSION,
+            "activated": False, "reason": "not_configured",
+            "pytensor_version": "not-installed", "platform": "darwin", "macos_major": None,
+        }
+        with patch.object(pytensor_compat, "_STATUS", initial), \
+             patch.object(pytensor_compat.sys, "platform", "darwin"), \
+             patch.object(pytensor_compat.platform, "mac_ver", return_value=("15.0", ())), \
+             patch.object(pytensor_compat.importlib.metadata, "version", return_value="2.38.3"), \
+             patch.object(pytensor_compat, "_load_compiler", return_value=FakeCompiler):
+            first = pytensor_compat.configure_pytensor_compatibility()
+            self.assertTrue(first["activated"])
+            self.assertEqual(FakeCompiler.compile_args(), ["-O2", "-pipe", "-march=native"])
+            self.assertEqual(FakeCompiler.compile_args(march_flags=False), ["-O2", "-pipe"])
+            second = pytensor_compat.configure_pytensor_compatibility()
+            self.assertEqual(second["reason"], "removed-generated-ld64")
+            self.assertEqual(FakeCompiler.compile_args(), ["-O2", "-pipe", "-march=native"])
 
     def test_direct_script_entrypoint_supports_registered_command(self):
         script = Path(__file__).parents[1] / "replication_hmetad.py"
@@ -178,6 +203,33 @@ class HMetaSummaryTests(unittest.TestCase):
             self.assertEqual(pending_models(["human"], group_dir,
                                             draws=900, chains=2, seed=1), ["human"])
 
+    def test_resume_requeues_when_input_digest_is_missing_or_changed(self):
+        expected = {"model": "model-digest", "human": "human-digest"}
+        with tempfile.TemporaryDirectory() as temp:
+            group_dir = Path(temp)
+            write_group_json(
+                group_dir, model="human", status="complete", draws_requested=800,
+                chains_requested=2, seed=20260918, input_digests=expected,
+            )
+            self.assertEqual(
+                pending_models(["human"], group_dir, draws=800, chains=2,
+                               seed=20260918, input_digests=expected), [],
+            )
+            self.assertEqual(
+                pending_models(["human"], group_dir, draws=800, chains=2,
+                               seed=20260918, input_digests={"model": "changed", "human": "human-digest"}),
+                ["human"],
+            )
+            write_group_json(
+                group_dir, model="legacy", status="complete", draws_requested=800,
+                chains_requested=2, seed=20260918,
+            )
+            self.assertEqual(
+                pending_models(["legacy"], group_dir, draws=800, chains=2,
+                               seed=20260918, input_digests=expected),
+                ["legacy"],
+            )
+
 
 class HMetaArtifactTests(unittest.TestCase):
     def test_refresh_manifest_enumerates_bayesian_outputs_and_hashes(self):
@@ -211,6 +263,24 @@ class HMetaArtifactTests(unittest.TestCase):
             self.assertEqual(frame["model"].tolist(), ["human", "model-a", "model-b"])
             self.assertEqual(frame.set_index("model").loc["model-a", "status"], "failed")
             self.assertEqual(frame.set_index("model").loc["model-b", "status"], "missing")
+
+    def test_aggregate_orders_formal_groups_human_then_family_and_size(self):
+        labels = [
+            "repl-qwen3-14b-q4km", "repl-gemma4-26b-a4b-qat",
+            "human", "repl-qwen3-1.7b-q8", "repl-gemma4-e4b-q4km",
+            "repl-qwen3-4b-q4km", "repl-gemma4-e2b-q4km",
+        ]
+        with tempfile.TemporaryDirectory() as temp:
+            group_dir = Path(temp) / "groups"
+            for label in labels:
+                write_group_json(group_dir, model=label, status="failed",
+                                 error_type="TestError", error_message="test")
+            frame = aggregate_results(labels, group_dir)
+            self.assertEqual(frame["model"].tolist(), [
+                "human", "repl-gemma4-e2b-q4km", "repl-gemma4-e4b-q4km",
+                "repl-gemma4-26b-a4b-qat", "repl-qwen3-1.7b-q8",
+                "repl-qwen3-4b-q4km", "repl-qwen3-14b-q4km",
+            ])
 
     def test_group_json_is_valid_and_replaced_atomically(self):
         with tempfile.TemporaryDirectory() as temp:
