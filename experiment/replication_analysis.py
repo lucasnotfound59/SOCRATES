@@ -539,6 +539,37 @@ def _top_model(summary: pd.DataFrame, metric: str, ascending: bool = False) -> s
     return str(finite.sort_values(metric, ascending=ascending, kind="stable").iloc[0]["model"])
 
 
+def _ranked_models(summary: pd.DataFrame, metric: str, ascending: bool = False) -> list[str]:
+    """Return every model in a stable numeric ranking, with missing values last."""
+    if metric not in summary or "model" not in summary:
+        return []
+    ranked = summary[["model", metric]].copy()
+    ranked["_value"] = pd.to_numeric(ranked[metric], errors="coerce")
+    ranked["_finite"] = ranked["_value"].notna()
+    ranked = ranked.sort_values(
+        ["_finite", "_value"], ascending=[False, ascending], kind="stable"
+    )
+    return ranked["model"].astype(str).tolist()
+
+
+def _mratio_plot_data(
+    metad_summary: pd.DataFrame, bootstrap_summary: pd.DataFrame
+) -> pd.DataFrame:
+    """Join point estimates and CIs in the fixed report/model order."""
+    columns = ["model", "x", "m_ratio", "m_ratio_lo", "m_ratio_hi", "evidence_tier"]
+    if metad_summary.empty:
+        return pd.DataFrame(columns=columns)
+    frame = metad_summary[["model", "m_ratio", "evidence_tier"]].copy()
+    intervals = (
+        bootstrap_summary[["model", "m_ratio_lo", "m_ratio_hi"]].copy()
+        if {"model", "m_ratio_lo", "m_ratio_hi"}.issubset(bootstrap_summary.columns)
+        else pd.DataFrame(columns=["model", "m_ratio_lo", "m_ratio_hi"])
+    )
+    frame = frame.merge(intervals, on="model", how="left", sort=False)
+    frame["x"] = np.arange(len(frame), dtype=float)
+    return frame[columns]
+
+
 def _write_tables(
     path: Path,
     model_summary: pd.DataFrame,
@@ -580,6 +611,8 @@ def _write_report(
     attempted = int(pd.to_numeric(quality.get("n_attempted", 0), errors="coerce").fillna(0).sum())
     accuracy_leader = _top_model(model_summary, "accuracy")
     ece_leader = _top_model(model_summary, "ece", ascending=True)
+    accuracy_ranking = _ranked_models(model_summary, "accuracy", ascending=False)
+    ece_ranking = _ranked_models(model_summary, "ece", ascending=True)
     human = matched_summary.loc[matched_summary["model"].eq("human")]
     human_acc = _fmt(human.iloc[0]["accuracy"]) if len(human) else "NA"
     human_ece = _fmt(human.iloc[0]["ece"]) if len(human) else "NA"
@@ -625,14 +658,17 @@ def _write_report(
         "## 数据质量",
         "",
         f"模型输入审计共 {attempted} 条尝试，其中 {valid} 条进入指标分母；质量表保留全部原始记录，"
-        f"无效/非响应记录共 {invalid} 条。协议要求保留三条非响应记录，并在质量审计中单独标记，"
-        "而不是静默删除；具体类别见 `data_quality.csv`。",
+        f"无效/非响应记录共 {invalid} 条；质量表保留这些记录并单独标记，而不是静默删除，"
+        "具体类别见 `data_quality.csv`。"
+        + ("该数量与协议预期的三条非响应记录一致。" if invalid == 3 else "若正式输入预期为三条非响应记录，应据此审查输入质量。"),
         "",
         "## 六模型准确率与校准",
         "",
         f"按预设的家族/规模顺序展示六个模型；准确率最高的是 {accuracy_leader}，ECE 最低的是 {ece_leader}。"
         f"六模型平均准确率为 {model_acc}，平均 ECE 为 {model_ece}。这些排名只描述观测行为，"
         "不等同于模型内部过程。",
+        f"完整准确率排名（高到低）：{' > '.join(accuracy_ranking) or '暂无'}。",
+        f"完整 ECE 排名（低到高）：{' > '.join(ece_ranking) or '暂无'}。",
         "",
         "## 中文人类与模型比较",
         "",
@@ -747,13 +783,23 @@ def _plot_artifacts(
 
     fig, ax = plt.subplots(figsize=(9, 4))
     colors = {"data-driven": "#2a9d8f", "regularized": "#e9c46a", "prior-dominated": "#e76f51"}
+    mratio_frame = _mratio_plot_data(metad_summary, bootstrap_summary)
     for tier in ("data-driven", "regularized", "prior-dominated"):
-        rows = metad_summary.loc[metad_summary["evidence_tier"].eq(tier)]
+        rows = mratio_frame.loc[mratio_frame["evidence_tier"].eq(tier)].copy()
+        rows["m_ratio"] = pd.to_numeric(rows["m_ratio"], errors="coerce")
+        rows["m_ratio_lo"] = pd.to_numeric(rows["m_ratio_lo"], errors="coerce")
+        rows["m_ratio_hi"] = pd.to_numeric(rows["m_ratio_hi"], errors="coerce")
+        rows = rows.loc[rows["m_ratio"].notna()]
         if len(rows):
-            ax.scatter(rows["model"], pd.to_numeric(rows["m_ratio"], errors="coerce"), color=colors[tier], label=tier, s=60)
+            lower = (rows["m_ratio"] - rows["m_ratio_lo"]).clip(lower=0).fillna(0)
+            upper = (rows["m_ratio_hi"] - rows["m_ratio"]).clip(lower=0).fillna(0)
+            ax.errorbar(rows["x"], rows["m_ratio"], yerr=np.vstack([lower, upper]), fmt="o",
+                        color=colors[tier], label=tier, capsize=3, markersize=6)
     ax.axhline(1.0, color="0.5", linestyle="--", linewidth=0.8)
-    ax.set_ylim(bottom=0); ax.set_ylabel("M-ratio"); ax.set_title("M-ratio by evidence tier"); ax.tick_params(axis="x", rotation=45)
-    ax.legend()
+    ax.set_ylim(bottom=0); ax.set_ylabel("M-ratio"); ax.set_title("M-ratio by evidence tier")
+    ax.set_xticks(mratio_frame["x"], mratio_frame["model"], rotation=45, ha="right")
+    if len(mratio_frame):
+        ax.legend()
     save("mratio_evidence.png")
 
     fig, ax = plt.subplots(figsize=(8, 5))
@@ -837,8 +883,8 @@ def run_analysis(
     # Include the manifest itself in the artifact index so consumers can
     # enumerate every generated file from one machine-readable record.
     artifacts["run_manifest.json"] = manifest_path
-    with human_path.open(encoding="utf-8") as handle:
-        human_row_count = max(0, sum(1 for _ in handle) - 1)
+    human_raw = pd.read_csv(human_path, low_memory=False)
+    human_row_count = int(len(human_raw))
     artifact_index = {name: str(path.resolve()) for name, path in artifacts.items()}
     manifest = {
         "inputs": {

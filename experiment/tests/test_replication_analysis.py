@@ -18,6 +18,8 @@ from experiment.replication_analysis import (
     fit_metad,
     cluster_bootstrap,
     bootstrap_all,
+    _mratio_plot_data,
+    _ranked_models,
 )
 
 
@@ -275,8 +277,44 @@ class ReplicationArtifactTests(unittest.TestCase):
         self.assertIn("run_manifest.json", manifest["artifacts"])
         self.assertIn("sha256", manifest["inputs"]["model"])
         report = (self.output_dir / "analysis_report_zh.md").read_text(encoding="utf-8")
-        for phrase in ("三条非响应记录", "六模型", "pending", "ceiling effects", "consciousness claim"):
+        for phrase in ("无效/非响应记录共 0 条", "六模型", "pending", "ceiling effects", "consciousness claim"):
             self.assertIn(phrase, report)
+        for model in MODELS:
+            self.assertIn(model, report)
+        ranking_text = report.split("完整准确率排名（高到低）：", 1)[1].split("。", 1)[0]
+        self.assertEqual(ranking_text, " > ".join(MODELS))
+
+    def test_report_rankings_include_all_models_in_metric_order(self):
+        summary = pd.DataFrame({
+            "model": ["model-0", "model-1", "model-2", "model-3", "model-4", "model-5"],
+            "accuracy": [0.70, 0.95, 0.80, 0.65, 0.90, 0.75],
+            "ece": [0.30, 0.05, 0.20, 0.35, 0.10, 0.25],
+        })
+        self.assertEqual(
+            _ranked_models(summary, "accuracy"),
+            ["model-1", "model-4", "model-2", "model-5", "model-0", "model-3"],
+        )
+        self.assertEqual(
+            _ranked_models(summary, "ece", ascending=True),
+            ["model-1", "model-4", "model-2", "model-5", "model-0", "model-3"],
+        )
+
+    def test_mratio_plot_data_keeps_order_and_bootstrap_intervals(self):
+        metad = pd.DataFrame({
+            "model": ["model-2", "model-0", "model-1"],
+            "m_ratio": [0.8, 1.1, 0.9],
+            "evidence_tier": ["regularized", "data-driven", "prior-dominated"],
+        })
+        bootstrap = pd.DataFrame({
+            "model": ["model-0", "model-1", "model-2"],
+            "m_ratio_lo": [0.9, 0.7, 0.6],
+            "m_ratio_hi": [1.3, 1.1, 1.0],
+        })
+        result = _mratio_plot_data(metad, bootstrap)
+        self.assertEqual(result["model"].tolist(), ["model-2", "model-0", "model-1"])
+        self.assertEqual(result["x"].tolist(), [0.0, 1.0, 2.0])
+        self.assertEqual(result["m_ratio_lo"].tolist(), [0.6, 0.9, 0.7])
+        self.assertEqual(result["m_ratio_hi"].tolist(), [1.0, 1.3, 1.1])
 
     def test_output_guard_and_resume_contract(self):
         from experiment.replication_analysis import run_analysis
