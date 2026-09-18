@@ -1,4 +1,5 @@
 import json
+import shutil
 import tempfile
 import unittest
 from pathlib import Path
@@ -24,6 +25,7 @@ from experiment.replication_analysis import (
     _validate_manifest_input_digests,
     validate_analysis_artifacts,
 )
+from experiment.replication_hmetad import refresh_run_manifest
 
 
 MODELS = [f"model-{i}" for i in range(6)]
@@ -281,6 +283,114 @@ class ReplicationArtifactTests(unittest.TestCase):
 
     def tearDown(self):
         self.temp_dir.cleanup()
+
+    def _copy_formal_audit_fixture(self):
+        root = Path(__file__).resolve().parents[2]
+        source = root / "results/replication_zh_2026-09-18/analysis"
+        model_path = root / "results/replication_zh_2026-09-18/results_local_zh_2026-09-18.csv"
+        human_path = root / "experiment/results/master_long.csv"
+        if not source.is_dir() or not model_path.is_file() or not human_path.is_file():
+            self.skipTest("formal generated artifacts are required for adversarial audit tests")
+        target = Path(self.temp_dir.name) / "formal-analysis"
+        shutil.copytree(source, target)
+        return target, model_path, human_path
+
+    def _refresh_fixture_manifest(self, target):
+        refresh_run_manifest(target, draws=800, chains=2, seed=20260918)
+
+    def test_audit_rejects_failed_group_without_digest_and_with_wrong_n(self):
+        target, model_path, human_path = self._copy_formal_audit_fixture()
+        group_path = target / "hmetad/groups/human.json"
+        record = json.loads(group_path.read_text(encoding="utf-8"))
+        record.update({"status": "failed", "n": 1, "n_wrong": None,
+                       "error_type": "TestFailure", "error_message": "synthetic"})
+        record.pop("input_digests", None)
+        group_path.write_text(json.dumps(record), encoding="utf-8")
+        summary_path = target / "hmetad_summary.csv"
+        summary = pd.read_csv(summary_path)
+        for column in ("status", "n_wrong", "error_type", "error_message"):
+            summary[column] = summary[column].astype(object)
+        summary.loc[summary["model"].eq("human"), ["status", "n", "n_wrong", "error_type", "error_message"]] = [
+            "failed", 1, pd.NA, "TestFailure", "synthetic"
+        ]
+        summary.to_csv(summary_path, index=False)
+        comparison_path = target / "human_model_summary.csv"
+        comparison = pd.read_csv(comparison_path)
+        comparison.loc[comparison["model"].eq("human"), "n"] = 1
+        comparison.to_csv(comparison_path, index=False)
+        self._refresh_fixture_manifest(target)
+        with self.assertRaisesRegex(ValueError, "Bayesian (group counts disagree with loaded source inputs|input digest mismatch)"):
+            validate_analysis_artifacts(target, model_path, human_path)
+
+    def test_audit_rejects_nan_complete_diagnostic(self):
+        target, model_path, human_path = self._copy_formal_audit_fixture()
+        group_path = target / "hmetad/groups/human.json"
+        record = json.loads(group_path.read_text(encoding="utf-8"))
+        record["m_ratio_mean"] = "NaN"
+        group_path.write_text(json.dumps(record), encoding="utf-8")
+        summary_path = target / "hmetad_summary.csv"
+        summary = pd.read_csv(summary_path)
+        summary.loc[summary["model"].eq("human"), "m_ratio_mean"] = pd.NA
+        summary.to_csv(summary_path, index=False)
+        self._refresh_fixture_manifest(target)
+        with self.assertRaisesRegex(ValueError, "m_ratio_mean must be a finite number"):
+            validate_analysis_artifacts(target, model_path, human_path)
+
+    def test_audit_rejects_nullable_complete_reliable(self):
+        target, model_path, human_path = self._copy_formal_audit_fixture()
+        group_path = target / "hmetad/groups/human.json"
+        record = json.loads(group_path.read_text(encoding="utf-8"))
+        record["reliable"] = None
+        group_path.write_text(json.dumps(record), encoding="utf-8")
+        summary_path = target / "hmetad_summary.csv"
+        summary = pd.read_csv(summary_path)
+        summary["reliable"] = summary["reliable"].astype(object)
+        summary.loc[summary["model"].eq("human"), "reliable"] = pd.NA
+        summary.to_csv(summary_path, index=False)
+        self._refresh_fixture_manifest(target)
+        with self.assertRaisesRegex(ValueError, "reliable must be a boolean"):
+            validate_analysis_artifacts(target, model_path, human_path)
+
+    def test_audit_rejects_failed_record_with_stale_summary_diagnostics(self):
+        target, model_path, human_path = self._copy_formal_audit_fixture()
+        group_path = target / "hmetad/groups/human.json"
+        record = json.loads(group_path.read_text(encoding="utf-8"))
+        record.update({"status": "failed", "n_wrong": None,
+                       "error_type": "TestFailure", "error_message": "synthetic"})
+        for field in ("m_ratio_mean", "m_ratio_median", "m_ratio_sd", "mr_mean", "mr_median",
+                      "post_sd", "hdi_lo", "hdi_hi", "hdi_width", "rhat", "n_divergent",
+                      "divergence_rate", "reliable", "evidence_tier"):
+            record.pop(field, None)
+        group_path.write_text(json.dumps(record), encoding="utf-8")
+        summary_path = target / "hmetad_summary.csv"
+        summary = pd.read_csv(summary_path)
+        for column in ("status", "n_wrong", "error_type", "error_message"):
+            summary[column] = summary[column].astype(object)
+        summary.loc[summary["model"].eq("human"), ["status", "n_wrong", "error_type", "error_message"]] = [
+            "failed", pd.NA, "TestFailure", "synthetic"
+        ]
+        summary.to_csv(summary_path, index=False)
+        self._refresh_fixture_manifest(target)
+        with self.assertRaisesRegex(ValueError, "unexpectedly present in summary"):
+            validate_analysis_artifacts(target, model_path, human_path)
+
+    def test_audit_rejects_self_consistent_counts_that_disagree_with_source(self):
+        target, model_path, human_path = self._copy_formal_audit_fixture()
+        group_path = target / "hmetad/groups/human.json"
+        record = json.loads(group_path.read_text(encoding="utf-8"))
+        record["n"] = 1
+        group_path.write_text(json.dumps(record), encoding="utf-8")
+        summary_path = target / "hmetad_summary.csv"
+        summary = pd.read_csv(summary_path)
+        summary.loc[summary["model"].eq("human"), "n"] = 1
+        summary.to_csv(summary_path, index=False)
+        comparison_path = target / "human_model_summary.csv"
+        comparison = pd.read_csv(comparison_path)
+        comparison.loc[comparison["model"].eq("human"), "n"] = 1
+        comparison.to_csv(comparison_path, index=False)
+        self._refresh_fixture_manifest(target)
+        with self.assertRaisesRegex(ValueError, "loaded source inputs"):
+            validate_analysis_artifacts(target, model_path, human_path)
 
     def test_run_analysis_writes_isolated_complete_artifacts(self):
         from experiment.replication_analysis import run_analysis

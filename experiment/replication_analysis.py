@@ -512,10 +512,31 @@ def _package_versions() -> dict[str, str]:
     return versions
 
 
-def _as_bool(value: object) -> bool:
+def _strict_bool(value: object, label: str) -> bool:
+    """Accept only JSON booleans or pandas' exact True/False values."""
     if isinstance(value, (bool, np.bool_)):
         return bool(value)
-    return str(value).strip().lower() in {"true", "1", "1.0"}
+    if isinstance(value, str) and value in {"True", "False"}:
+        return value == "True"
+    raise ValueError(f"{label} must be a boolean")
+
+
+def _strict_int(value: object, label: str) -> int:
+    if isinstance(value, (bool, np.bool_)) or not isinstance(value, (int, np.integer)):
+        raise ValueError(f"{label} must be an integer")
+    return int(value)
+
+
+def _strict_finite(value: object, label: str) -> float:
+    if isinstance(value, bool) or value is None:
+        raise ValueError(f"{label} must be a finite number")
+    try:
+        numeric = float(value)
+    except (TypeError, ValueError):
+        raise ValueError(f"{label} must be a finite number") from None
+    if not np.isfinite(numeric):
+        raise ValueError(f"{label} must be a finite number")
+    return numeric
 
 
 def _validate_formal_model_labels(labels: Sequence[object]) -> set[str]:
@@ -592,6 +613,13 @@ def validate_analysis_artifacts(
     hmetad_n = hmetad.set_index("model")["n"].astype(int)
     if not comparison_n.equals(hmetad_n.reindex(comparison_n.index)):
         raise ValueError("Bayesian group counts disagree with human_model_summary.csv")
+    source_counts = {"human": len(human)}
+    source_counts.update({
+        model: int((valid_model["model"].astype(str) == model).sum())
+        for model in model_names
+    })
+    if any(int(comparison_n[model]) != source_counts[model] for model in comparison_names):
+        raise ValueError("Bayesian group counts disagree with loaded source inputs")
 
     manifest = json.loads((output / "run_manifest.json").read_text(encoding="utf-8"))
     if manifest.get("random_seed") != RANDOM_SEED or manifest.get("bootstrap") != {"nboot_metrics": 800, "nboot_mratio": 250}:
@@ -615,39 +643,69 @@ def validate_analysis_artifacts(
     if set(group_records) != comparison_names:
         raise ValueError("Bayesian group JSON order/labels disagree with formal order")
     hmetad_by_model = hmetad.set_index("model")
+    expected_input_digests = {
+        "model": inputs["model"].get("sha256"),
+        "human": inputs["human"].get("sha256"),
+    }
+    core_fields = ("n", "n_wrong", "draws", "chains", "seed")
+    diagnostic_fields = (
+        "m_ratio_mean", "hdi_lo", "hdi_hi", "rhat", "n_divergent", "divergence_rate",
+        "reliable", "evidence_tier",
+    )
     for model in expected_bayesian_order:
         record = group_records[model]
         row = hmetad_by_model.loc[model]
         status = str(record.get("status", ""))
         if status not in {"complete", "failed"} or str(row["status"]) != status:
             raise ValueError(f"Bayesian status mismatch for {model}")
+        if record.get("input_digests") != expected_input_digests:
+            raise ValueError(f"Bayesian input digest mismatch for {model}")
+        for field in core_fields:
+            record_value = record.get(field)
+            summary_value = row[field] if field in hmetad.columns else None
+            # Failed preprocessing records legitimately have no posterior
+            # draws, chains, or error count; every field they do provide is
+            # still checked against the summary rather than ignored.
+            if record_value is None:
+                if pd.notna(summary_value):
+                    raise ValueError(f"Bayesian {field} unexpectedly present in summary for {model}")
+                continue
+            record_int = _strict_int(record_value, f"{model}.{field}")
+            if pd.isna(summary_value) or _strict_int(summary_value, f"summary {model}.{field}") != record_int:
+                raise ValueError(f"Bayesian {field} mismatch for {model}")
         if status == "failed":
             if not str(record.get("error_type", "")).strip() or not str(record.get("error_message", "")).strip():
                 raise ValueError(f"failed Bayesian group lacks error details: {model}")
             for field in ("error_type", "error_message"):
                 if str(row[field]) != str(record[field]):
                     raise ValueError(f"Bayesian {field} mismatch for {model}")
+            for field in diagnostic_fields:
+                record_value = record.get(field)
+                summary_value = row[field] if field in hmetad.columns else None
+                if record_value is None:
+                    if pd.notna(summary_value):
+                        raise ValueError(f"Bayesian {field} unexpectedly present in summary for {model}")
+                    continue
+                if field == "reliable":
+                    if _strict_bool(record_value, f"{model}.{field}") != _strict_bool(summary_value, f"summary {model}.{field}"):
+                        raise ValueError(f"Bayesian {field} mismatch for {model}")
+                elif field == "evidence_tier":
+                    if str(summary_value) != str(record_value):
+                        raise ValueError(f"Bayesian {field} mismatch for {model}")
+                elif not np.isclose(_strict_finite(record_value, f"{model}.{field}"), _strict_finite(summary_value, f"summary {model}.{field}")):
+                    raise ValueError(f"Bayesian {field} mismatch for {model}")
             continue
-        for field in ("n", "n_wrong", "draws", "chains", "seed", "n_divergent", "reliable"):
+        for field in diagnostic_fields:
             if field not in record or field not in hmetad.columns:
                 raise ValueError(f"Bayesian group is missing {field}: {model}")
-            left = record[field]
-            right = row[field]
             if field == "reliable":
-                equal = bool(left) == _as_bool(right)
-            else:
-                equal = int(left) == int(right)
-            if not equal:
+                if _strict_bool(record[field], f"{model}.{field}") != _strict_bool(row[field], f"summary {model}.{field}"):
+                    raise ValueError(f"Bayesian {field} mismatch for {model}")
+            elif field == "evidence_tier":
+                if not str(record[field]).strip() or str(row[field]).strip() != str(record[field]):
+                    raise ValueError(f"Bayesian {field} mismatch for {model}")
+            elif not np.isclose(_strict_finite(record[field], f"{model}.{field}"), _strict_finite(row[field], f"summary {model}.{field}")):
                 raise ValueError(f"Bayesian {field} mismatch for {model}")
-        for field in ("m_ratio_mean", "hdi_lo", "hdi_hi", "rhat", "divergence_rate"):
-            if not np.isclose(float(record[field]), float(row[field]), equal_nan=True):
-                raise ValueError(f"Bayesian {field} mismatch for {model}")
-        if str(record.get("evidence_tier")) != str(row["evidence_tier"]):
-            raise ValueError(f"Bayesian evidence mismatch for {model}")
-        if not isinstance(record.get("input_digests"), dict):
-            raise ValueError(f"Bayesian input digests missing for {model}")
-        if record["input_digests"].get("model") != inputs["model"].get("sha256") or record["input_digests"].get("human") != inputs["human"].get("sha256"):
-            raise ValueError(f"Bayesian input digest mismatch for {model}")
     versions = manifest.get("package_versions", {})
     if any(versions.get(name) in (None, "not-installed") for name in ("pymc", "arviz", "pytensor", "metadpy")):
         raise ValueError("manifest is missing Bayesian package versions")
