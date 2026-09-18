@@ -55,9 +55,19 @@ def _model_sort_key(model: object) -> tuple:
     name = str(model)
     if name == "human":
         return (0, "", -1, "")
-    numbers = re.findall(r"\d+(?:\.\d+)?", name)
-    numeric = float(numbers[-1]) if numbers else float("inf")
-    family = re.sub(r"\d+(?:\.\d+)?", "#", name)
+    # Formal local replication labels encode the model version and parameter
+    # size in the same identifier (e.g. qwen3-14b, gemma-e4b, and
+    # gemma-26b-a4b-qat).  Only the first parameter-size token is the size;
+    # quantization/active-expert suffixes must not affect ordering.
+    base = re.sub(r"-nothink$", "", name)
+    if base.startswith("local-gemma-"):
+        family = "gemma"
+    elif base.startswith("local-qwen3-"):
+        family = "qwen3"
+    else:
+        family = re.sub(r"(?:^|[-_])(?:e)?\d+(?:\.\d+)?b", "-size", base)
+    size_match = re.search(r"(?:^|[-_])(?:e)?(\d+(?:\.\d+)?)b(?:[-_]|$)", base)
+    numeric = float(size_match.group(1)) if size_match else float("inf")
     return (1, family, numeric, name)
 
 

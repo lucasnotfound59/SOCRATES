@@ -10,6 +10,7 @@ from experiment.replication_analysis import (
     evidence_tier,
     load_human_trials,
     load_model_attempts,
+    summarize_groups,
     type2_auroc,
     validate_model_attempts,
 )
@@ -131,6 +132,22 @@ class ReplicationInputTests(unittest.TestCase):
 
 
 class ReplicationMetricTests(unittest.TestCase):
+    def test_summary_orders_formal_models_by_family_and_parameter_size(self):
+        models = [
+            "local-qwen3-14b", "local-gemma-26b-a4b-qat", "human",
+            "local-qwen3-4b", "local-gemma-e4b", "local-gemma-e2b",
+            "local-qwen3-1.7b",
+        ]
+        data = pd.DataFrame({
+            "model": models, "conf": [1] * len(models), "stated": [0.5] * len(models),
+            "correct": [True] * len(models),
+        })
+        self.assertEqual(summarize_groups(data)["model"].tolist(), [
+            "human", "local-gemma-e2b", "local-gemma-e4b",
+            "local-gemma-26b-a4b-qat", "local-qwen3-1.7b",
+            "local-qwen3-4b", "local-qwen3-14b",
+        ])
+
     def test_ece_uses_binary_task_confidence_mapping(self):
         group = pd.DataFrame({"conf": [1, 1, 5, 5], "correct": [True, False, True, False]})
         self.assertAlmostEqual(ece(group), 0.25)
