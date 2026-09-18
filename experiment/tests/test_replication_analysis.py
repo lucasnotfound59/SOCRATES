@@ -57,7 +57,9 @@ class ReplicationInputTests(unittest.TestCase):
         attempts = make_model_attempts()
         attempts.loc[0, "parse_ok"] = False
         attempts.loc[0, "parsed_answer"] = ""
-        all_rows, valid = load_model_attempts(write_csv(attempts))
+        path = write_csv(attempts)
+        self.addCleanup(path.unlink)
+        all_rows, valid = load_model_attempts(path)
         self.assertEqual(len(all_rows), 9600)
         self.assertEqual(len(valid), 9599)
         self.assertNotIn(all_rows.iloc[0].name, valid.index)
@@ -69,9 +71,15 @@ class ReplicationInputTests(unittest.TestCase):
             validate_model_attempts(attempts)
 
     def test_human_loader_returns_only_valid_chinese_human_rows(self):
-        clean = load_human_trials(write_csv(make_human_master()))
+        path = write_csv(make_human_master())
+        self.addCleanup(path.unlink)
+        clean = load_human_trials(path)
+        self.assertEqual(len(clean), 1)
         self.assertTrue((clean["model"] == "human").all())
         self.assertTrue((clean["language"] == "zh").all())
+        self.assertEqual(clean.iloc[0]["conf"], 4)
+        self.assertEqual(clean.iloc[0]["stated"], 0.875)
+        self.assertEqual(clean.iloc[0]["cluster_id"], "p1")
         self.assertNotIn("participant_id", clean.columns)
         self.assertIn("cluster_id", clean.columns)
 
@@ -91,3 +99,29 @@ class ReplicationInputTests(unittest.TestCase):
         self.assertEqual(quality["n_api_error"].sum(), 1)
         self.assertEqual(quality["n_parse_failure"].sum(), 1)
 
+    def test_correct_is_derived_from_answer_and_gold(self):
+        attempts = make_model_attempts()
+        attempts.loc[0, "correct"] = "False"  # deliberately disagree
+        path = write_csv(attempts)
+        self.addCleanup(path.unlink)
+        _, valid = load_model_attempts(path)
+        self.assertTrue(bool(valid.loc[0, "correct"]))
+
+    def test_validation_rejects_canonical_duplicate_and_blank_keys(self):
+        attempts = make_model_attempts()
+        attempts.loc[1, "item_id"] = "  " + attempts.loc[0, "item_id"] + "  "
+        attempts.loc[1, "sample_idx"] = attempts.loc[0, "sample_idx"]
+        with self.assertRaisesRegex(ValueError, "unique task keys"):
+            validate_model_attempts(attempts)
+        attempts = make_model_attempts()
+        attempts.loc[0, "item_id"] = " "
+        with self.assertRaisesRegex(ValueError, "non-empty"):
+            validate_model_attempts(attempts)
+
+    def test_human_loader_rejects_missing_participant_id(self):
+        human = make_human_master()
+        human.loc[0, "participant_id"] = " "
+        path = write_csv(human)
+        self.addCleanup(path.unlink)
+        clean = load_human_trials(path)
+        self.assertEqual(len(clean), 0)

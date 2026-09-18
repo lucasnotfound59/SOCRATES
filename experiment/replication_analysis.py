@@ -54,7 +54,9 @@ def _normalise(frame: pd.DataFrame, cluster_from: str = "item_id") -> pd.DataFra
         out[col] = _text(out, col)
     out["gold"] = out["gold"].str.title()
     out["parsed_answer"] = out["parsed_answer"].str.title()
-    out["correct"] = out["correct"].map(parse_bool) if "correct" in out else False
+    # Accuracy is an observed property of the normalized answer and gold;
+    # never trust a producer-supplied ``correct`` field.
+    out["correct"] = out["gold"].eq(out["parsed_answer"])
     confidence = out.get("confidence", out.get("conf", pd.Series(index=out.index)))
     out["conf"] = pd.to_numeric(confidence, errors="coerce")
     out["stated"] = out["conf"].map(CONFIDENCE_MAP)
@@ -72,13 +74,20 @@ def validate_model_attempts(attempts: pd.DataFrame) -> None:
         raise ValueError(f"missing formal key columns: {missing}")
     if len(attempts) != EXPECTED_TOTAL_ATTEMPTS:
         raise ValueError(f"expected {EXPECTED_TOTAL_ATTEMPTS} attempts, got {len(attempts)}")
-    if attempts[FORMAL_KEY].duplicated().any():
+    canonical = attempts.copy()
+    canonical["model"] = _text(canonical, "model")
+    canonical["language"] = _text(canonical, "language").str.lower()
+    canonical["item_id"] = _text(canonical, "item_id")
+    canonical["sample_idx"] = pd.to_numeric(canonical["sample_idx"], errors="coerce")
+    if canonical[FORMAL_KEY].isna().any().any() or canonical[FORMAL_KEY].eq("").any().any():
+        raise ValueError("formal task keys must be non-empty")
+    if canonical[FORMAL_KEY].duplicated().any():
         raise ValueError("formal task keys must be unique task keys")
-    if attempts["language"].astype(str).str.strip().str.lower().ne("zh").any():
+    if canonical["language"].ne("zh").any():
         raise ValueError("model attempts must be Chinese rows")
-    if attempts["model"].nunique() != EXPECTED_MODELS:
+    if canonical["model"].nunique() != EXPECTED_MODELS:
         raise ValueError(f"expected {EXPECTED_MODELS} models")
-    counts = attempts.groupby("model", dropna=False).size()
+    counts = canonical.groupby("model", dropna=False).size()
     if not (counts == EXPECTED_ATTEMPTS_PER_MODEL).all():
         raise ValueError(f"each model must have {EXPECTED_ATTEMPTS_PER_MODEL} attempts")
 
@@ -98,6 +107,8 @@ def load_human_trials(path: Path) -> pd.DataFrame:
         & (_text(raw, "language").str.lower().eq("zh"))
         & (_text(raw, "status").str.lower().eq("ok"))
     ].copy()
+    participant = _text(selected, "participant_id")
+    selected = selected.loc[participant.ne("")]
     # Human status is the parse gate; unlike model rows, some human exports do
     # not carry a separate parse_ok column.
     human_valid = (
