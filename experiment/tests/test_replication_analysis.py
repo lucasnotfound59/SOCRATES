@@ -1,3 +1,4 @@
+import json
 import tempfile
 import unittest
 from pathlib import Path
@@ -223,3 +224,75 @@ class ReplicationBootstrapTests(unittest.TestCase):
         second = bootstrap_all(data, nboot_metrics=4, nboot_mratio=2, seed=7)
         pd.testing.assert_frame_equal(first, second)
         self.assertEqual(first["model"].tolist(), ["a", "b"])
+
+
+class ReplicationArtifactTests(unittest.TestCase):
+    def setUp(self):
+        self.temp_dir = tempfile.TemporaryDirectory()
+        self.output_dir = Path(self.temp_dir.name) / "analysis"
+
+    def tearDown(self):
+        self.temp_dir.cleanup()
+
+    def test_run_analysis_writes_isolated_complete_artifacts(self):
+        from experiment.replication_analysis import run_analysis
+
+        model_path = write_csv(make_model_attempts(6, 400, 4))
+        human_path = write_csv(make_human_master())
+        self.addCleanup(model_path.unlink)
+        self.addCleanup(human_path.unlink)
+        paths = run_analysis(
+            model_path=model_path,
+            human_path=human_path,
+            output_dir=self.output_dir,
+            nboot_metrics=8,
+            nboot_mratio=0,
+        )
+        required = {
+            "data_quality.csv", "model_summary.csv", "human_model_summary.csv",
+            "by_type.csv", "by_difficulty.csv", "confidence_distribution.csv",
+            "reliability.csv", "hallucination_breakdown.csv",
+            "hallucination_sdt.csv", "metad_summary.csv",
+            "bootstrap_summary.csv", "tables.md", "analysis_report_zh.md",
+            "run_manifest.json",
+        }
+        self.assertTrue(required.issubset({path.name for path in paths.values()}))
+        comparison = pd.read_csv(self.output_dir / "human_model_summary.csv")
+        self.assertNotIn("participant_id", comparison.columns)
+        for name in required:
+            self.assertTrue((self.output_dir / name).exists() or name.startswith("figures/"))
+        figures = self.output_dir / "figures"
+        self.assertEqual(
+            {path.name for path in figures.glob("*.png")},
+            {
+                "model_accuracy_ece.png", "human_model_accuracy_ece.png",
+                "accuracy_by_type.png", "mratio_evidence.png",
+                "reliability_curves.png", "hallucination_breakdown.png",
+            },
+        )
+        manifest = json.loads((self.output_dir / "run_manifest.json").read_text(encoding="utf-8"))
+        self.assertEqual(manifest["random_seed"], 20260918)
+        self.assertIn("run_manifest.json", manifest["artifacts"])
+        self.assertIn("sha256", manifest["inputs"]["model"])
+        report = (self.output_dir / "analysis_report_zh.md").read_text(encoding="utf-8")
+        for phrase in ("三条非响应记录", "六模型", "pending", "ceiling effects", "consciousness claim"):
+            self.assertIn(phrase, report)
+
+    def test_output_guard_and_resume_contract(self):
+        from experiment.replication_analysis import run_analysis
+
+        model_path = write_csv(make_model_attempts())
+        human_path = write_csv(make_human_master())
+        self.addCleanup(model_path.unlink)
+        self.addCleanup(human_path.unlink)
+        run_analysis(model_path, human_path, self.output_dir, nboot_metrics=0, nboot_mratio=0)
+        with self.assertRaises(FileExistsError):
+            run_analysis(model_path, human_path, self.output_dir, nboot_metrics=0, nboot_mratio=0)
+        (self.output_dir / "hmetad").mkdir()
+        marker = self.output_dir / "hmetad" / "group.csv"
+        marker.write_text("keep", encoding="utf-8")
+        run_analysis(model_path, human_path, self.output_dir, nboot_metrics=0, nboot_mratio=0, resume=True)
+        self.assertEqual(marker.read_text(encoding="utf-8"), "keep")
+        forbidden = Path(__file__).resolve().parents[1] / "results" / "analysis"
+        with self.assertRaises(ValueError):
+            run_analysis(model_path, human_path, forbidden, nboot_metrics=0, nboot_mratio=0)

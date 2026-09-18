@@ -1,5 +1,15 @@
-"""Input contracts and privacy-safe normalization for the Chinese replication."""
+"""Input contracts and privacy-safe normalization for the Chinese replication.
 
+The public analysis entry point in this module deliberately writes only to a
+caller-supplied directory.  The legacy ``experiment/results`` tree is not an
+output location for this pipeline.
+"""
+
+import argparse
+from datetime import datetime, timezone
+import hashlib
+import importlib.metadata
+import json
 from pathlib import Path
 import re
 from typing import Callable, Sequence
@@ -444,3 +454,439 @@ def data_quality_table(attempts: pd.DataFrame) -> pd.DataFrame:
         "model", "n_attempted", "n_valid", "n_invalid", "coverage",
         "n_truncated", "n_api_error", "n_parse_failure",
     ])
+
+
+# ---------------------------------------------------------------------------
+# Artifact pipeline
+
+_CSV_ARTIFACTS = (
+    "data_quality.csv", "model_summary.csv", "human_model_summary.csv",
+    "by_type.csv", "by_difficulty.csv", "confidence_distribution.csv",
+    "reliability.csv", "hallucination_breakdown.csv", "hallucination_sdt.csv",
+    "metad_summary.csv", "bootstrap_summary.csv",
+)
+_FIGURE_NAMES = (
+    "model_accuracy_ece.png", "human_model_accuracy_ece.png",
+    "accuracy_by_type.png", "mratio_evidence.png", "reliability_curves.png",
+    "hallucination_breakdown.png",
+)
+
+
+def _safe_output_dir(output_dir: Path) -> Path:
+    """Resolve an output path and reject the legacy analysis locations."""
+    resolved = Path(output_dir).expanduser().resolve()
+    experiment = Path(__file__).resolve().parent
+    forbidden = {
+        (experiment / "results" / "analysis").resolve(),
+        (experiment / "results" / "figures").resolve(),
+    }
+    if resolved in forbidden:
+        raise ValueError(
+            "output_dir must be isolated; experiment/results/analysis and "
+            "experiment/results/figures are forbidden"
+        )
+    return resolved
+
+
+def _sha256(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as handle:
+        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def _package_versions() -> dict[str, str]:
+    versions = {}
+    for package in ("numpy", "pandas", "scipy", "matplotlib", "metadpy"):
+        try:
+            versions[package] = importlib.metadata.version(package)
+        except importlib.metadata.PackageNotFoundError:
+            versions[package] = "not-installed"
+    return versions
+
+
+def _write_csv(frame: pd.DataFrame, path: Path) -> Path:
+    frame.to_csv(path, index=False)
+    return path
+
+
+def _markdown_table(frame: pd.DataFrame) -> str:
+    try:
+        return frame.to_markdown(index=False)
+    except (ImportError, ModuleNotFoundError):
+        # Keep the artifact usable on minimal environments without tabulate.
+        columns = [str(c) for c in frame.columns]
+        lines = ["| " + " | ".join(columns) + " |",
+                 "| " + " | ".join("---" for _ in columns) + " |"]
+        for row in frame.itertuples(index=False, name=None):
+            lines.append("| " + " | ".join("" if pd.isna(v) else str(v) for v in row) + " |")
+        return "\n".join(lines)
+
+
+def _fmt(value: object, digits: int = 3) -> str:
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return "NA" if value is None or pd.isna(value) else str(value)
+    return "NA" if not np.isfinite(number) else f"{number:.{digits}f}"
+
+
+def _top_model(summary: pd.DataFrame, metric: str, ascending: bool = False) -> str:
+    finite = summary.loc[pd.to_numeric(summary[metric], errors="coerce").notna()]
+    if finite.empty:
+        return "暂无"
+    return str(finite.sort_values(metric, ascending=ascending, kind="stable").iloc[0]["model"])
+
+
+def _write_tables(
+    path: Path,
+    model_summary: pd.DataFrame,
+    matched_summary: pd.DataFrame,
+    by_type: pd.DataFrame,
+    hallucination: pd.DataFrame,
+    metad_summary: pd.DataFrame,
+) -> Path:
+    sections = [
+        "# 中文复现分析表格\n",
+        "## 六模型核心指标\n\n" + _markdown_table(model_summary),
+        "## 中文人类与模型对照\n\n" + _markdown_table(matched_summary),
+        "## 按题型准确率\n\n" + _markdown_table(
+            by_type[["model", "type", "n", "accuracy"]]
+        ),
+        "## 幻觉题 SDT\n\n" + _markdown_table(hallucination),
+        "## M-ratio 与证据等级\n\n" + _markdown_table(
+            metad_summary[["model", "n", "n_wrong", "m_ratio", "evidence_tier", "fit_status"]]
+        ),
+    ]
+    path.write_text("\n\n".join(sections) + "\n", encoding="utf-8")
+    return path
+
+
+def _write_report(
+    path: Path,
+    quality: pd.DataFrame,
+    model_summary: pd.DataFrame,
+    matched_summary: pd.DataFrame,
+    by_type: pd.DataFrame,
+    by_difficulty: pd.DataFrame,
+    hallucination: pd.DataFrame,
+    hallucination_sdt_frame: pd.DataFrame,
+    metad_summary: pd.DataFrame,
+    bootstrap_summary: pd.DataFrame,
+) -> Path:
+    invalid = int(pd.to_numeric(quality.get("n_invalid", 0), errors="coerce").fillna(0).sum())
+    valid = int(pd.to_numeric(quality.get("n_valid", 0), errors="coerce").fillna(0).sum())
+    attempted = int(pd.to_numeric(quality.get("n_attempted", 0), errors="coerce").fillna(0).sum())
+    accuracy_leader = _top_model(model_summary, "accuracy")
+    ece_leader = _top_model(model_summary, "ece", ascending=True)
+    human = matched_summary.loc[matched_summary["model"].eq("human")]
+    human_acc = _fmt(human.iloc[0]["accuracy"]) if len(human) else "NA"
+    human_ece = _fmt(human.iloc[0]["ece"]) if len(human) else "NA"
+    model_acc = _fmt(model_summary["accuracy"].mean()) if len(model_summary) else "NA"
+    model_ece = _fmt(model_summary["ece"].mean()) if len(model_summary) else "NA"
+
+    tier_lines = []
+    for tier in ("data-driven", "regularized", "prior-dominated"):
+        rows = metad_summary.loc[metad_summary["evidence_tier"].eq(tier)]
+        if rows.empty:
+            tier_lines.append(f"- `{tier}`：本次没有组落入该等级。")
+        else:
+            values = ", ".join(
+                f"{row.model}（M-ratio={_fmt(row.m_ratio)}，错误数={int(row.n_wrong)}）"
+                for row in rows.itertuples()
+            )
+            caveat = "可作数据驱动比较" if tier == "data-driven" else "仅作透明报告，不据此下元认知强弱结论"
+            tier_lines.append(f"- `{tier}`：{values}；{caveat}。")
+
+    type_rows = by_type.loc[pd.to_numeric(by_type["accuracy"], errors="coerce").notna()]
+    type_best = "暂无"
+    if not type_rows.empty:
+        best = type_rows.sort_values("accuracy", ascending=False, kind="stable").iloc[0]
+        type_best = f"{best['model']} 在 {best['type']} 上准确率 {_fmt(best['accuracy'])}"
+    difficulty_rows = by_difficulty.loc[pd.to_numeric(by_difficulty["accuracy"], errors="coerce").notna()]
+    difficulty_best = "暂无"
+    if not difficulty_rows.empty:
+        best = difficulty_rows.sort_values("accuracy", ascending=False, kind="stable").iloc[0]
+        difficulty_best = f"{best['model']} 在 {best['difficulty']} 上准确率 {_fmt(best['accuracy'])}"
+    hall_rows = hallucination_sdt_frame.loc[hallucination_sdt_frame["model"].ne("human")]
+    hall_best = "暂无"
+    if not hall_rows.empty:
+        best = hall_rows.sort_values("dprime", ascending=False, kind="stable").iloc[0]
+        hall_best = f"{best['model']} 的 d′={_fmt(best['dprime'])}"
+    hall_breakdown = "暂无"
+    if len(hallucination):
+        best = hallucination.sort_values("accuracy_gap", ascending=False, kind="stable").iloc[0]
+        hall_breakdown = f"{best['model']} 的真实-虚构准确率差为 {_fmt(best['accuracy_gap'])}"
+
+    lines = [
+        "# 中文复现分析报告",
+        "",
+        "## 数据质量",
+        "",
+        f"模型输入审计共 {attempted} 条尝试，其中 {valid} 条进入指标分母；质量表保留全部原始记录，"
+        f"无效/非响应记录共 {invalid} 条。协议要求保留三条非响应记录，并在质量审计中单独标记，"
+        "而不是静默删除；具体类别见 `data_quality.csv`。",
+        "",
+        "## 六模型准确率与校准",
+        "",
+        f"按预设的家族/规模顺序展示六个模型；准确率最高的是 {accuracy_leader}，ECE 最低的是 {ece_leader}。"
+        f"六模型平均准确率为 {model_acc}，平均 ECE 为 {model_ece}。这些排名只描述观测行为，"
+        "不等同于模型内部过程。",
+        "",
+        "## 中文人类与模型比较",
+        "",
+        f"在相同中文任务与五档置信度编码下，人类行的准确率为 {human_acc}、ECE 为 {human_ece}；"
+        f"六模型平均值分别为 {model_acc} 和 {model_ece}。人类记录按参与者聚类，模型记录按题目聚类，"
+        "因此该对照用于描述性比较，不应被解释为完全相同抽样结构下的因果差异。",
+        "",
+        "## 题型、难度与幻觉",
+        "",
+        f"分层表中观测到的最高题型-模型组合为：{type_best}；最高难度-模型组合为：{difficulty_best}。"
+        "完整难度分层结果见 `by_difficulty.csv`；"
+        f"幻觉题 SDT 的最高 d′ 组合为：{hall_best}；准确率差异最大的组合为：{hall_breakdown}。"
+        "虚构命题与真实冷僻命题的准确率、置信度差异见"
+        "`hallucination_breakdown.csv`，SDT 校正值见 `hallucination_sdt.csv`。",
+        "",
+        "## M-ratio 结果与证据等级",
+        "",
+        *tier_lines,
+        "",
+        "MLE 点估计和聚类 bootstrap 区间均保留；接近满分的组可能没有稳定的错误结构，"
+        "因此 `regularized` 和 `prior-dominated` 组不会被包装成确定的元认知结论。",
+        "",
+        "## Bayesian 状态",
+        "",
+        "pending：Bayesian HMeta-d 汇总属于后续任务；本报告只呈现非 Bayesian 的 MLE 与 bootstrap 结果。",
+        "",
+        "## 局限性",
+        "",
+        "- 人类与模型具有不等的 sampling structures（人类按参与者、模型按题目聚类）。",
+        "- ceiling effects 会令近满分组的 M-ratio 估计不稳定。",
+        "- quantization/model-family confounding 使规模趋势不能单独归因于参数量。",
+        "- 所有结果都是 behavioral-only interpretation，不推断不可观测的内部机制。",
+        "- 本研究不作 consciousness claim，也不把置信度行为等同于意识。",
+    ]
+    path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    return path
+
+
+def _plot_artifacts(
+    figure_dir: Path,
+    model_summary: pd.DataFrame,
+    matched_summary: pd.DataFrame,
+    by_type: pd.DataFrame,
+    metad_summary: pd.DataFrame,
+    reliability: pd.DataFrame,
+    hallucination: pd.DataFrame,
+    bootstrap_summary: pd.DataFrame,
+) -> dict[str, Path]:
+    import matplotlib
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+    # The report is Chinese; use an installed CJK font when available and
+    # retain DejaVu as a portable fallback for headless CI.
+    matplotlib.rcParams["font.sans-serif"] = ["STSong", "Heiti SC", "Arial Unicode MS", "DejaVu Sans"]
+    matplotlib.rcParams["axes.unicode_minus"] = False
+
+    figure_dir.mkdir(parents=True, exist_ok=True)
+    paths: dict[str, Path] = {}
+
+    def save(name: str) -> None:
+        target = figure_dir / name
+        plt.tight_layout()
+        plt.savefig(target, dpi=140)
+        plt.close()
+        paths[name] = target
+
+    def accuracy_ece(frame: pd.DataFrame, title: str) -> None:
+        fig, axes = plt.subplots(1, 2, figsize=(10, 4))
+        labels = frame["model"].astype(str).tolist() if len(frame) else []
+        x = np.arange(len(labels))
+        values = pd.to_numeric(frame.get("accuracy", pd.Series(dtype=float)), errors="coerce").to_numpy(dtype=float)
+        errors = np.zeros((2, len(values)))
+        if len(bootstrap_summary):
+            boot = bootstrap_summary.set_index("model")
+            for idx, label in enumerate(labels):
+                if label in boot.index and "accuracy_lo" in boot and "accuracy_hi" in boot and np.isfinite(values[idx]):
+                    lo, hi = float(boot.loc[label, "accuracy_lo"]), float(boot.loc[label, "accuracy_hi"])
+                    if np.isfinite(lo) and np.isfinite(hi):
+                        errors[:, idx] = [max(0.0, values[idx] - lo), max(0.0, hi - values[idx])]
+        axes[0].bar(x, values, yerr=errors if len(values) else None, capsize=3, color="#277da1")
+        axes[0].set_ylim(0, 1); axes[0].set_ylabel("Accuracy"); axes[0].set_xticks(x, labels, rotation=45, ha="right")
+        ece_values = pd.to_numeric(frame.get("ece", pd.Series(dtype=float)), errors="coerce").to_numpy(dtype=float)
+        ece_errors = np.zeros((2, len(ece_values)))
+        if len(bootstrap_summary):
+            boot = bootstrap_summary.set_index("model")
+            for idx, label in enumerate(labels):
+                if label in boot.index and "ece_lo" in boot and "ece_hi" in boot and np.isfinite(ece_values[idx]):
+                    lo, hi = float(boot.loc[label, "ece_lo"]), float(boot.loc[label, "ece_hi"])
+                    if np.isfinite(lo) and np.isfinite(hi):
+                        ece_errors[:, idx] = [max(0.0, ece_values[idx] - lo), max(0.0, hi - ece_values[idx])]
+        axes[1].bar(x, ece_values, yerr=ece_errors if len(ece_values) else None, capsize=3, color="#f9844a")
+        axes[1].set_ylim(0, 1); axes[1].set_ylabel("ECE"); axes[1].set_xticks(x, labels, rotation=45, ha="right")
+        fig.suptitle(title)
+
+    accuracy_ece(model_summary, "Model accuracy and calibration")
+    save("model_accuracy_ece.png")
+    accuracy_ece(matched_summary, "Chinese human and model comparison")
+    save("human_model_accuracy_ece.png")
+
+    fig, ax = plt.subplots(figsize=(10, 4))
+    types = list(dict.fromkeys(by_type["type"].astype(str))) if len(by_type) else []
+    models = matched_summary["model"].astype(str).tolist() if len(matched_summary) else []
+    width = 0.8 / max(len(models), 1)
+    for idx, model in enumerate(models):
+        rows = by_type.loc[by_type["model"].eq(model)].set_index("type")
+        values = [float(rows.loc[level, "accuracy"]) if level in rows.index and pd.notna(rows.loc[level, "accuracy"]) else np.nan for level in types]
+        ax.bar(np.arange(len(types)) + idx * width, values, width=width, label=model)
+    ax.set_xticks(np.arange(len(types)) + width * max(len(models) - 1, 0) / 2, types)
+    ax.set_ylim(0, 1); ax.set_ylabel("Accuracy"); ax.set_title("Accuracy by item type")
+    if models: ax.legend(fontsize="small", ncol=2)
+    save("accuracy_by_type.png")
+
+    fig, ax = plt.subplots(figsize=(9, 4))
+    colors = {"data-driven": "#2a9d8f", "regularized": "#e9c46a", "prior-dominated": "#e76f51"}
+    for tier in ("data-driven", "regularized", "prior-dominated"):
+        rows = metad_summary.loc[metad_summary["evidence_tier"].eq(tier)]
+        if len(rows):
+            ax.scatter(rows["model"], pd.to_numeric(rows["m_ratio"], errors="coerce"), color=colors[tier], label=tier, s=60)
+    ax.axhline(1.0, color="0.5", linestyle="--", linewidth=0.8)
+    ax.set_ylim(bottom=0); ax.set_ylabel("M-ratio"); ax.set_title("M-ratio by evidence tier"); ax.tick_params(axis="x", rotation=45)
+    ax.legend()
+    save("mratio_evidence.png")
+
+    fig, ax = plt.subplots(figsize=(8, 5))
+    for model in reliability["model"].astype(str).unique() if len(reliability) else []:
+        rows = reliability.loc[reliability["model"].eq(model)].sort_values("confidence")
+        ax.plot(rows["stated"], rows["accuracy"], marker="o", label=model)
+    ax.plot([0, 1], [0, 1], linestyle="--", color="0.5", label="perfect calibration")
+    ax.set_xlim(0.45, 1.02); ax.set_ylim(0, 1); ax.set_xlabel("Stated confidence"); ax.set_ylabel("Observed accuracy")
+    ax.set_title("Reliability curves"); ax.legend(fontsize="small", ncol=2)
+    save("reliability_curves.png")
+
+    fig, ax = plt.subplots(figsize=(9, 4))
+    if len(hallucination):
+        labels = hallucination["model"].astype(str).tolist(); x = np.arange(len(labels)); width = 0.36
+        ax.bar(x - width / 2, hallucination["fictional_accuracy"], width, label="fictional")
+        ax.bar(x + width / 2, hallucination["real_accuracy"], width, label="real obscure")
+        ax.set_xticks(x, labels, rotation=45, ha="right")
+    ax.set_ylim(0, 1); ax.set_ylabel("Accuracy"); ax.set_title("Hallucination breakdown")
+    if len(hallucination):
+        ax.legend()
+    save("hallucination_breakdown.png")
+    return paths
+
+
+def run_analysis(
+    model_path: Path,
+    human_path: Path,
+    output_dir: Path,
+    nboot_metrics: int = 800,
+    nboot_mratio: int = 250,
+    seed: int = RANDOM_SEED,
+    resume: bool = False,
+) -> dict[str, Path]:
+    """Run the non-Bayesian Chinese replication and write isolated artifacts."""
+    if nboot_metrics < 0 or nboot_mratio < 0:
+        raise ValueError("bootstrap counts must be non-negative")
+    output = _safe_output_dir(Path(output_dir))
+    if output.exists() and any(output.iterdir()) and not resume:
+        raise FileExistsError(f"analysis output exists; pass resume=True: {output}")
+    output.mkdir(parents=True, exist_ok=True)
+    model_path, human_path = Path(model_path).expanduser().resolve(), Path(human_path).expanduser().resolve()
+    started = datetime.now(timezone.utc)
+    all_model, model = load_model_attempts(model_path)
+    human = load_human_trials(human_path)
+    quality = data_quality_table(all_model)
+    matched = pd.concat([model, human], ignore_index=True, sort=False)
+    model_summary = summarize_groups(model)
+    matched_summary = summarize_groups(matched)
+    by_type = summarize_factor(matched, "type", ["常规", "学科", "陷阱", "幻觉"])
+    by_difficulty = summarize_factor(matched, "difficulty", ["易", "中", "难"])
+    confidence = confidence_distribution(matched)
+    reliability = reliability_table(matched)
+    hallucination = hallucination_breakdown(matched)
+    sdt = hallucination_sdt(matched)
+    metad_rows = []
+    for model_name in _ordered_models(matched):
+        fit = fit_metad(matched.loc[matched["model"].astype(str).eq(model_name)])
+        fit["model"] = model_name
+        metad_rows.append(fit)
+    metad_columns = ["model", "dprime", "meta_d", "m_ratio", "m_diff", "n", "n_wrong", "evidence_tier", "fit_status"]
+    metad_summary = pd.DataFrame(metad_rows, columns=metad_columns)
+    bootstrap = bootstrap_all(matched, nboot_metrics=nboot_metrics, nboot_mratio=nboot_mratio, seed=seed)
+
+    artifacts: dict[str, Path] = {}
+    frames = {
+        "data_quality.csv": quality, "model_summary.csv": model_summary,
+        "human_model_summary.csv": matched_summary, "by_type.csv": by_type,
+        "by_difficulty.csv": by_difficulty, "confidence_distribution.csv": confidence,
+        "reliability.csv": reliability, "hallucination_breakdown.csv": hallucination,
+        "hallucination_sdt.csv": sdt, "metad_summary.csv": metad_summary,
+        "bootstrap_summary.csv": bootstrap,
+    }
+    for name, frame in frames.items():
+        artifacts[name] = _write_csv(frame, output / name)
+    artifacts["tables.md"] = _write_tables(output / "tables.md", model_summary, matched_summary, by_type, sdt, metad_summary)
+    artifacts["analysis_report_zh.md"] = _write_report(output / "analysis_report_zh.md", quality, model_summary, matched_summary, by_type, by_difficulty, hallucination, sdt, metad_summary, bootstrap)
+    figure_paths = _plot_artifacts(output / "figures", model_summary, matched_summary, by_type, metad_summary, reliability, hallucination, bootstrap)
+    artifacts.update({f"figures/{name}": path for name, path in figure_paths.items()})
+    ended = datetime.now(timezone.utc)
+    manifest_path = output / "run_manifest.json"
+    # Include the manifest itself in the artifact index so consumers can
+    # enumerate every generated file from one machine-readable record.
+    artifacts["run_manifest.json"] = manifest_path
+    with human_path.open(encoding="utf-8") as handle:
+        human_row_count = max(0, sum(1 for _ in handle) - 1)
+    artifact_index = {name: str(path.resolve()) for name, path in artifacts.items()}
+    manifest = {
+        "inputs": {
+            "model": {"path": str(model_path), "sha256": _sha256(model_path), "row_count": int(len(all_model)), "valid_row_count": int(len(model))},
+            "human": {"path": str(human_path), "sha256": _sha256(human_path), "row_count": human_row_count, "valid_row_count": int(len(human))},
+        },
+        "input_paths": {"model": str(model_path), "human": str(human_path)},
+        "input_digests": {"model": _sha256(model_path), "human": _sha256(human_path)},
+        "row_counts": {"model": int(len(all_model)), "human": human_row_count},
+        "random_seed": int(seed),
+        "bootstrap": {"nboot_metrics": int(nboot_metrics), "nboot_mratio": int(nboot_mratio)},
+        "bootstrap_counts": {"metrics": int(nboot_metrics), "mratio": int(nboot_mratio)},
+        "package_versions": _package_versions(), "started_at": started.isoformat(), "ended_at": ended.isoformat(),
+        "start_timestamp": started.isoformat(), "end_timestamp": ended.isoformat(),
+        "artifacts": artifact_index,
+        "artifact_paths": artifact_index,
+    }
+    manifest_path.write_text(json.dumps(manifest, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    return artifacts
+
+
+def _build_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(description="Generate isolated Chinese replication analysis artifacts")
+    parser.add_argument("--model-results", type=Path, required=True)
+    parser.add_argument("--human-master", type=Path, required=True)
+    parser.add_argument("--output-dir", type=Path, required=True)
+    parser.add_argument("--nboot-metrics", type=int, default=800)
+    parser.add_argument("--nboot-mratio", type=int, default=250)
+    parser.add_argument("--seed", type=int, default=RANDOM_SEED)
+    parser.add_argument("--resume", action="store_true")
+    parser.add_argument("--validate-only", action="store_true")
+    return parser
+
+
+def main(argv: Sequence[str] | None = None) -> int:
+    args = _build_parser().parse_args(argv)
+    _safe_output_dir(args.output_dir)
+    if args.validate_only:
+        all_model, valid_model = load_model_attempts(args.model_results)
+        human = load_human_trials(args.human_master)
+        print(json.dumps({"model_rows": len(all_model), "model_valid_rows": len(valid_model), "human_valid_rows": len(human)}, ensure_ascii=False))
+        return 0
+    paths = run_analysis(args.model_results, args.human_master, args.output_dir,
+                         nboot_metrics=args.nboot_metrics, nboot_mratio=args.nboot_mratio,
+                         seed=args.seed, resume=args.resume)
+    print(json.dumps({key: str(value) for key, value in paths.items()}, ensure_ascii=False, indent=2))
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
